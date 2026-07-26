@@ -31,7 +31,7 @@ public sealed class ShortcutService : IShortcutService
         int? colorTemperatureKelvin,
         CancellationToken cancellationToken = default)
     {
-        ValidateShortcutInputs(targets, color, colorTemperatureKelvin);
+        ValidateShortcutInputs(targets, brightness, color, colorTemperatureKelvin);
 
         var shortcut = new Shortcut
         {
@@ -58,7 +58,7 @@ public sealed class ShortcutService : IShortcutService
         int? colorTemperatureKelvin,
         CancellationToken cancellationToken = default)
     {
-        ValidateShortcutInputs(targets, color, colorTemperatureKelvin);
+        ValidateShortcutInputs(targets, brightness, color, colorTemperatureKelvin);
 
         var shortcut = new Shortcut
         {
@@ -78,7 +78,21 @@ public sealed class ShortcutService : IShortcutService
     public Task DeleteShortcutAsync(int id, CancellationToken cancellationToken = default) =>
         _repository.DeleteAsync(id, cancellationToken);
 
-    private static void ValidateShortcutInputs(IReadOnlyList<(string Sku, string DeviceId)> targets, RgbColor? color, int? colorTemperatureKelvin)
+    // Govee's brightness range is consistently 1-100 across every known device; the color
+    // temperature band is deliberately generous (device-specific ranges are typically narrower,
+    // e.g. 2700-6500K) since this is just a sanity check against nonsensical input, not a
+    // per-device bound — the UI's own inputs already constrain to each device's real range, but
+    // the service is the actual trust boundary and shouldn't rely on that.
+    private const int MinBrightness = 1;
+    private const int MaxBrightness = 100;
+    private const int MinColorTemperatureKelvin = 2000;
+    private const int MaxColorTemperatureKelvin = 9000;
+
+    private static void ValidateShortcutInputs(
+        IReadOnlyList<(string Sku, string DeviceId)> targets,
+        int? brightness,
+        RgbColor? color,
+        int? colorTemperatureKelvin)
     {
         if (color is not null && colorTemperatureKelvin is not null)
         {
@@ -89,6 +103,18 @@ public sealed class ShortcutService : IShortcutService
         {
             throw new ArgumentException("A shortcut must target at least one device.", nameof(targets));
         }
+
+        if (brightness is { } b && (b < MinBrightness || b > MaxBrightness))
+        {
+            throw new ArgumentException($"Brightness must be between {MinBrightness} and {MaxBrightness}.", nameof(brightness));
+        }
+
+        if (colorTemperatureKelvin is { } k && (k < MinColorTemperatureKelvin || k > MaxColorTemperatureKelvin))
+        {
+            throw new ArgumentException(
+                $"Color temperature must be between {MinColorTemperatureKelvin}K and {MaxColorTemperatureKelvin}K.",
+                nameof(colorTemperatureKelvin));
+        }
     }
 
     /// <inheritdoc />
@@ -97,9 +123,28 @@ public sealed class ShortcutService : IShortcutService
         var shortcut = await _repository.GetByIdAsync(id, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"No shortcut with id {id} exists.");
 
+        // Applying is best-effort per target: one offline bulb (a routine occurrence with these
+        // devices) must not prevent the shortcut from reaching the rest of them. Failures are
+        // collected and reported together after every target has been attempted, rather than
+        // letting the first exception abort the loop and silently skip everything after it.
+        var failures = new List<ShortcutTargetFailure>();
+        var succeededCount = 0;
         foreach (var target in shortcut.Targets)
         {
-            await ApplyToTargetAsync(shortcut, target, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await ApplyToTargetAsync(shortcut, target, cancellationToken).ConfigureAwait(false);
+                succeededCount++;
+            }
+            catch (Exception ex)
+            {
+                failures.Add(new ShortcutTargetFailure(target.DeviceSku, target.DeviceId, ex.Message));
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new ShortcutApplyException(succeededCount, shortcut.Targets.Count, failures);
         }
     }
 

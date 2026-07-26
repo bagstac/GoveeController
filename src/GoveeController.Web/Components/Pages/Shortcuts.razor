@@ -1,10 +1,13 @@
 @page "/shortcuts"
+@implements IDisposable
 @using GoveeController.Application.Devices
 @using GoveeController.Application.Shortcuts
 @using GoveeController.Domain.Devices
 @using GoveeController.Domain.Shortcuts
+@using GoveeController.Web.Components.Shared
 @inject IShortcutService ShortcutService
 @inject IDeviceControlService DeviceControlService
+@inject ILogger<Shortcuts> Logger
 
 <PageTitle>Shortcuts</PageTitle>
 
@@ -163,16 +166,20 @@ else
     private string? _error;
     private int? _editingId;
 
+    // Cancelled on dispose so an in-flight Govee/EF call doesn't run to completion and then touch
+    // a disposed component (e.g. the user navigating away mid-request).
+    private readonly CancellationTokenSource _cts = new();
+
     protected override async Task OnInitializedAsync()
     {
         try
         {
-            _shortcuts = await ShortcutService.ListShortcutsAsync();
-            _devices = await DeviceControlService.ListDevicesAsync();
+            _shortcuts = await ShortcutService.ListShortcutsAsync(_cts.Token);
+            _devices = await DeviceControlService.ListDevicesAsync(cancellationToken: _cts.Token);
         }
         catch (Exception ex)
         {
-            _error = $"Failed to load: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Loading");
         }
     }
 
@@ -181,12 +188,20 @@ else
         _busy = true;
         try
         {
-            await ShortcutService.ApplyShortcutAsync(id);
+            await ShortcutService.ApplyShortcutAsync(id, _cts.Token);
             _error = null;
+        }
+        catch (ShortcutApplyException ex)
+        {
+            // Applying is best-effort per target (see ShortcutService.ApplyShortcutAsync), so a
+            // partial failure still means most/all lights did what was asked — say so precisely
+            // rather than a blanket "failed" that reads as if nothing happened.
+            var failedNames = ex.Failures.Select(f => _devices?.FirstOrDefault(d => d.Id == f.DeviceId)?.Name ?? f.DeviceSku);
+            _error = $"Applied to {ex.SucceededCount} of {ex.TotalCount} device(s). Failed: {string.Join(", ", failedNames)}.";
         }
         catch (Exception ex)
         {
-            _error = $"Failed to apply shortcut: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Applying shortcut");
         }
         finally
         {
@@ -199,8 +214,8 @@ else
         _busy = true;
         try
         {
-            await ShortcutService.DeleteShortcutAsync(id);
-            _shortcuts = await ShortcutService.ListShortcutsAsync();
+            await ShortcutService.DeleteShortcutAsync(id, _cts.Token);
+            _shortcuts = await ShortcutService.ListShortcutsAsync(_cts.Token);
             if (_editingId == id)
             {
                 ResetForm();
@@ -208,7 +223,7 @@ else
         }
         catch (Exception ex)
         {
-            _error = $"Failed to delete shortcut: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Deleting shortcut");
         }
         finally
         {
@@ -252,7 +267,8 @@ else
                     _form.PowerOn,
                     _form.Brightness,
                     color,
-                    _form.ColorTemperatureKelvin);
+                    _form.ColorTemperatureKelvin,
+                    _cts.Token);
             }
             else
             {
@@ -262,16 +278,17 @@ else
                     _form.PowerOn,
                     _form.Brightness,
                     color,
-                    _form.ColorTemperatureKelvin);
+                    _form.ColorTemperatureKelvin,
+                    _cts.Token);
             }
 
-            _shortcuts = await ShortcutService.ListShortcutsAsync();
+            _shortcuts = await ShortcutService.ListShortcutsAsync(_cts.Token);
             ResetForm();
             _error = null;
         }
         catch (Exception ex)
         {
-            _error = $"Failed to save shortcut: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Saving shortcut");
         }
         finally
         {
@@ -357,5 +374,12 @@ else
         public int? Brightness { get; set; }
         public string ColorHex { get; set; } = string.Empty;
         public int? ColorTemperatureKelvin { get; set; }
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
     }
 }

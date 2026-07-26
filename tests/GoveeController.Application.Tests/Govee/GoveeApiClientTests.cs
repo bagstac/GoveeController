@@ -101,6 +101,94 @@ public class GoveeApiClientTests
     }
 
     [Fact]
+    public async Task GetDeviceStateAsync_MapsAllCapabilities_OnWellFormedResponse()
+    {
+        const string json = """
+        {
+          "requestId": "x",
+          "msg": "success",
+          "code": 200,
+          "payload": {
+            "sku": "H600A",
+            "device": "AA:BB:CC:DD:EE:FF:00:11",
+            "capabilities": [
+              { "type": "devices.capabilities.on_off", "instance": "powerSwitch", "state": { "value": 1 } },
+              { "type": "devices.capabilities.range", "instance": "brightness", "state": { "value": 80 } },
+              { "type": "devices.capabilities.color_setting", "instance": "colorRgb", "state": { "value": 16711680 } },
+              { "type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "state": { "value": 4000 } }
+            ]
+          }
+        }
+        """;
+        var handler = new FakeHttpMessageHandler(json);
+        var client = CreateClient(handler);
+
+        var state = await client.GetDeviceStateAsync("H600A", "AA:BB:CC:DD:EE:FF:00:11");
+
+        Assert.True(state.PowerOn);
+        Assert.Equal(80, state.Brightness);
+        Assert.Equal(new RgbColor(255, 0, 0), state.Color);
+        Assert.Equal(4000, state.ColorTemperatureKelvin);
+    }
+
+    [Fact]
+    public async Task GetDeviceStateAsync_LeavesFieldsNull_WhenCapabilitiesAreMissing()
+    {
+        const string json = """
+        {
+          "requestId": "x",
+          "msg": "success",
+          "code": 200,
+          "payload": {
+            "sku": "H600A",
+            "device": "AA:BB:CC:DD:EE:FF:00:11",
+            "capabilities": [
+              { "type": "devices.capabilities.on_off", "instance": "powerSwitch", "state": { "value": 0 } }
+            ]
+          }
+        }
+        """;
+        var handler = new FakeHttpMessageHandler(json);
+        var client = CreateClient(handler);
+
+        var state = await client.GetDeviceStateAsync("H600A", "AA:BB:CC:DD:EE:FF:00:11");
+
+        Assert.False(state.PowerOn);
+        Assert.Null(state.Brightness);
+        Assert.Null(state.Color);
+        Assert.Null(state.ColorTemperatureKelvin);
+    }
+
+    [Fact]
+    public async Task GetDeviceStateAsync_DegradesToNull_RatherThanThrow_WhenAValueIsNotANumber()
+    {
+        // A malformed/unexpected shape for one field (a string instead of a number, here) must not
+        // take down the whole device card — only that one field should come back unknown.
+        const string json = """
+        {
+          "requestId": "x",
+          "msg": "success",
+          "code": 200,
+          "payload": {
+            "sku": "H600A",
+            "device": "AA:BB:CC:DD:EE:FF:00:11",
+            "capabilities": [
+              { "type": "devices.capabilities.on_off", "instance": "powerSwitch", "state": { "value": 1 } },
+              { "type": "devices.capabilities.range", "instance": "brightness", "state": { "value": "not-a-number" } }
+            ]
+          }
+        }
+        """;
+        var handler = new FakeHttpMessageHandler(json);
+        var client = CreateClient(handler);
+
+        var state = await client.GetDeviceStateAsync("H600A", "AA:BB:CC:DD:EE:FF:00:11");
+
+        Assert.True(state.PowerOn);
+        Assert.Null(state.Brightness);
+    }
+
+    [Fact]
     public async Task SetPowerAsync_Throws_WhenGoveeReportsBodyLevelFailureUnderHttp200()
     {
         // Govee's control endpoint returns HTTP 200 even when the command fails (e.g. the

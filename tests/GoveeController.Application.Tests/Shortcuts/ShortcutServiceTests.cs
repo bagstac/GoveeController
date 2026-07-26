@@ -13,6 +13,8 @@ public class ShortcutServiceTests
     private const string DeviceId = "AA:BB:CC:DD:EE:FF:00:11";
     private const string Sku2 = "H6159";
     private const string DeviceId2 = "11:22:33:44:55:66:77:88";
+    private const string Sku3 = "H6159";
+    private const string DeviceId3 = "22:33:44:55:66:77:88:99";
 
     private static readonly IReadOnlyList<(string Sku, string DeviceId)> OneTarget = [(Sku, DeviceId)];
     private static readonly IReadOnlyList<(string Sku, string DeviceId)> TwoTargets = [(Sku, DeviceId), (Sku2, DeviceId2)];
@@ -27,6 +29,32 @@ public class ShortcutServiceTests
         await Assert.ThrowsAsync<ArgumentException>(() => service.CreateShortcutAsync(
             "Movie Mode", OneTarget, powerOn: true, brightness: 50,
             color: new RgbColor(255, 0, 0), colorTemperatureKelvin: 4000));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(101)]
+    public async Task CreateShortcutAsync_Throws_WhenBrightnessOutOfRange(int brightness)
+    {
+        var repository = new Mock<IShortcutRepository>();
+        var deviceControl = new Mock<IDeviceControlService>();
+        var service = new ShortcutService(repository.Object, deviceControl.Object);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateShortcutAsync(
+            "Bad Brightness", OneTarget, powerOn: true, brightness: brightness, color: null, colorTemperatureKelvin: null));
+    }
+
+    [Theory]
+    [InlineData(1999)]
+    [InlineData(9001)]
+    public async Task CreateShortcutAsync_Throws_WhenColorTemperatureOutOfRange(int kelvin)
+    {
+        var repository = new Mock<IShortcutRepository>();
+        var deviceControl = new Mock<IDeviceControlService>();
+        var service = new ShortcutService(repository.Object, deviceControl.Object);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateShortcutAsync(
+            "Bad Temp", OneTarget, powerOn: true, brightness: null, color: null, colorTemperatureKelvin: kelvin));
     }
 
     [Fact]
@@ -190,5 +218,39 @@ public class ShortcutServiceTests
 
         deviceControl.Verify(d => d.TurnOffAsync(Sku, DeviceId, It.IsAny<CancellationToken>()), Times.Once);
         deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ApplyShortcutAsync_ContinuesPastAFailingTarget_AndReportsPartialFailure()
+    {
+        var shortcut = new Shortcut
+        {
+            Id = 4,
+            Name = "All Off",
+            Targets =
+            [
+                new ShortcutTarget { DeviceSku = Sku, DeviceId = DeviceId },
+                new ShortcutTarget { DeviceSku = Sku2, DeviceId = DeviceId2 },
+                new ShortcutTarget { DeviceSku = Sku3, DeviceId = DeviceId3 }
+            ],
+            PowerOn = false,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetByIdAsync(4, It.IsAny<CancellationToken>())).ReturnsAsync(shortcut);
+        var deviceControl = new Mock<IDeviceControlService>();
+        deviceControl.Setup(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Device is offline."));
+        var service = new ShortcutService(repository.Object, deviceControl.Object);
+
+        var ex = await Assert.ThrowsAsync<ShortcutApplyException>(() => service.ApplyShortcutAsync(4));
+
+        // The failing middle target must not prevent the third (or the first) from being attempted.
+        deviceControl.Verify(d => d.TurnOffAsync(Sku, DeviceId, It.IsAny<CancellationToken>()), Times.Once);
+        deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Once);
+        deviceControl.Verify(d => d.TurnOffAsync(Sku3, DeviceId3, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(2, ex.SucceededCount);
+        Assert.Equal(3, ex.TotalCount);
+        Assert.Equal(DeviceId2, Assert.Single(ex.Failures).DeviceId);
     }
 }

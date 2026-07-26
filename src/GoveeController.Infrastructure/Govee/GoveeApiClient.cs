@@ -4,6 +4,7 @@ using System.Text.Json;
 using GoveeController.Application.Devices;
 using GoveeController.Domain.Devices;
 using Microsoft.Extensions.Options;
+using Polly.RateLimiting;
 
 namespace GoveeController.Infrastructure.Govee;
 
@@ -39,6 +40,8 @@ public sealed class GoveeApiClient : IGoveeApiClient
     {
         var config = options.Value;
         httpClient.BaseAddress = new Uri(config.BaseUrl, UriKind.Absolute);
+        // Never log this header's value or config.ApiKey directly — default HttpClient logging
+        // doesn't include headers, but raising log verbosity for debugging must not be able to leak it.
         httpClient.DefaultRequestHeaders.Add("Govee-API-Key", config.ApiKey);
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         _httpClient = httpClient;
@@ -47,30 +50,44 @@ public sealed class GoveeApiClient : IGoveeApiClient
     /// <inheritdoc />
     public async Task<IReadOnlyList<Device>> GetDevicesAsync(CancellationToken cancellationToken = default)
     {
-        using var httpResponse = await _httpClient.GetAsync(DevicesPath, cancellationToken).ConfigureAwait(false);
-        httpResponse.EnsureSuccessStatusCode();
+        try
+        {
+            using var httpResponse = await _httpClient.GetAsync(DevicesPath, cancellationToken).ConfigureAwait(false);
+            httpResponse.EnsureSuccessStatusCode();
 
-        var response = await httpResponse.Content.ReadFromJsonAsync<GetDevicesResponseDto>(JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        ThrowIfGoveeError(response?.Code, response?.Message);
+            var response = await httpResponse.Content.ReadFromJsonAsync<GetDevicesResponseDto>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            ThrowIfGoveeError(response?.Code, response?.Message);
 
-        return response?.Data.Select(MapDevice).ToList() ?? [];
+            return response?.Data.Select(MapDevice).ToList() ?? [];
+        }
+        catch (RateLimiterRejectedException ex)
+        {
+            throw TranslateRateLimitRejection(ex);
+        }
     }
 
     /// <inheritdoc />
     public async Task<LightState> GetDeviceStateAsync(string sku, string deviceId, CancellationToken cancellationToken = default)
     {
-        var request = new DeviceRefRequestDto { Payload = new DeviceRefPayloadDto { Sku = sku, Device = deviceId } };
-        using var httpResponse = await _httpClient.PostAsJsonAsync(StatePath, request, JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        httpResponse.EnsureSuccessStatusCode();
+        try
+        {
+            var request = new DeviceRefRequestDto { Payload = new DeviceRefPayloadDto { Sku = sku, Device = deviceId } };
+            using var httpResponse = await _httpClient.PostAsJsonAsync(StatePath, request, JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            httpResponse.EnsureSuccessStatusCode();
 
-        var response = await httpResponse.Content.ReadFromJsonAsync<GetDeviceStateResponseDto>(JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        ThrowIfGoveeError(response?.Code, response?.Msg);
-        var capabilities = response?.Payload?.Capabilities ?? [];
+            var response = await httpResponse.Content.ReadFromJsonAsync<GetDeviceStateResponseDto>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            ThrowIfGoveeError(response?.Code, response?.Msg);
+            var capabilities = response?.Payload?.Capabilities ?? [];
 
-        return MapState(capabilities);
+            return MapState(capabilities);
+        }
+        catch (RateLimiterRejectedException ex)
+        {
+            throw TranslateRateLimitRejection(ex);
+        }
     }
 
     /// <inheritdoc />
@@ -92,21 +109,28 @@ public sealed class GoveeApiClient : IGoveeApiClient
     /// <inheritdoc />
     public async Task<IReadOnlyList<GoveeScene>> GetScenesAsync(string sku, string deviceId, CancellationToken cancellationToken = default)
     {
-        var request = new DeviceRefRequestDto { Payload = new DeviceRefPayloadDto { Sku = sku, Device = deviceId } };
-        using var httpResponse = await _httpClient.PostAsJsonAsync(ScenesPath, request, JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        httpResponse.EnsureSuccessStatusCode();
+        try
+        {
+            var request = new DeviceRefRequestDto { Payload = new DeviceRefPayloadDto { Sku = sku, Device = deviceId } };
+            using var httpResponse = await _httpClient.PostAsJsonAsync(ScenesPath, request, JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            httpResponse.EnsureSuccessStatusCode();
 
-        var response = await httpResponse.Content.ReadFromJsonAsync<GetScenesResponseDto>(JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        ThrowIfGoveeError(response?.Code, response?.Msg);
+            var response = await httpResponse.Content.ReadFromJsonAsync<GetScenesResponseDto>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            ThrowIfGoveeError(response?.Code, response?.Msg);
 
-        var sceneCapability = response?.Payload?.Capabilities
-            .FirstOrDefault(c => c.Type == DynamicSceneType && c.Instance == LightSceneInstance);
+            var sceneCapability = response?.Payload?.Capabilities
+                .FirstOrDefault(c => c.Type == DynamicSceneType && c.Instance == LightSceneInstance);
 
-        return sceneCapability?.Parameters?.Options
-            .Select(o => new GoveeScene(o.Name, o.Value.ParamId, o.Value.Id))
-            .ToList() ?? [];
+            return sceneCapability?.Parameters?.Options
+                .Select(o => new GoveeScene(o.Name, o.Value.ParamId, o.Value.Id))
+                .ToList() ?? [];
+        }
+        catch (RateLimiterRejectedException ex)
+        {
+            throw TranslateRateLimitRejection(ex);
+        }
     }
 
     /// <inheritdoc />
@@ -121,26 +145,33 @@ public sealed class GoveeApiClient : IGoveeApiClient
 
     private async Task SendControlAsync(string sku, string deviceId, string type, string instance, object value, CancellationToken cancellationToken)
     {
-        var request = new ControlRequestDto
+        try
         {
-            Payload = new ControlPayloadDto
+            var request = new ControlRequestDto
             {
-                Sku = sku,
-                Device = deviceId,
-                Capability = new ControlCapabilityDto { Type = type, Instance = instance, Value = value }
-            }
-        };
+                Payload = new ControlPayloadDto
+                {
+                    Sku = sku,
+                    Device = deviceId,
+                    Capability = new ControlCapabilityDto { Type = type, Instance = instance, Value = value }
+                }
+            };
 
-        using var httpResponse = await _httpClient.PostAsJsonAsync(ControlPath, request, JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        httpResponse.EnsureSuccessStatusCode();
+            using var httpResponse = await _httpClient.PostAsJsonAsync(ControlPath, request, JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            httpResponse.EnsureSuccessStatusCode();
 
-        // Govee reports device-specific failures (e.g. "Device is offline") as HTTP 200 with a
-        // non-200 `code` in the body, not as an HTTP error status — so EnsureSuccessStatusCode()
-        // alone would silently swallow a failed control command.
-        var response = await httpResponse.Content.ReadFromJsonAsync<ControlResponseDto>(JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        ThrowIfGoveeError(response?.Code, response?.Msg);
+            // Govee reports device-specific failures (e.g. "Device is offline") as HTTP 200 with a
+            // non-200 `code` in the body, not as an HTTP error status — so EnsureSuccessStatusCode()
+            // alone would silently swallow a failed control command.
+            var response = await httpResponse.Content.ReadFromJsonAsync<ControlResponseDto>(JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            ThrowIfGoveeError(response?.Code, response?.Msg);
+        }
+        catch (RateLimiterRejectedException ex)
+        {
+            throw TranslateRateLimitRejection(ex);
+        }
     }
 
     /// <summary>
@@ -154,6 +185,15 @@ public sealed class GoveeApiClient : IGoveeApiClient
             throw new GoveeApiException(c, message ?? $"Govee API returned error code {c}.");
         }
     }
+
+    /// <summary>
+    /// Translates a local rate-limit rejection (this app's own client-side throttle — see
+    /// ServiceCollectionExtensions.AddGoveeInfrastructure — refusing to even send the request) into
+    /// the same exception type callers already handle for Govee-reported failures, so the UI shows
+    /// a clear "try again shortly" message instead of an unfamiliar Polly exception type.
+    /// </summary>
+    private static GoveeApiException TranslateRateLimitRejection(RateLimiterRejectedException ex) =>
+        new(429, "Govee rate limit reached; please wait a moment and try again.");
 
     private static Device MapDevice(DeviceDto dto)
     {
@@ -202,24 +242,35 @@ public sealed class GoveeApiClient : IGoveeApiClient
             switch (capability.Type, capability.Instance)
             {
                 case (OnOffType, OnOffInstance):
-                    powerOn = capability.State?.Value.GetInt32() == 1;
+                    powerOn = TryReadInt(capability.State) == 1;
                     break;
                 case (BrightnessType, BrightnessInstance):
-                    brightness = capability.State?.Value.GetInt32();
+                    brightness = TryReadInt(capability.State);
                     break;
                 case (ColorSettingType, ColorRgbInstance):
-                    var packed = capability.State?.Value.GetInt32();
-                    if (packed is { } p)
+                    if (TryReadInt(capability.State) is { } packed)
                     {
-                        color = RgbColor.FromPackedInt(p);
+                        color = RgbColor.FromPackedInt(packed);
                     }
                     break;
                 case (ColorSettingType, ColorTemperatureInstance):
-                    colorTemperature = capability.State?.Value.GetInt32();
+                    colorTemperature = TryReadInt(capability.State);
                     break;
             }
         }
 
         return new LightState(powerOn, brightness, color, colorTemperature);
     }
+
+    /// <summary>
+    /// Reads a capability's state value as an int, or null if it's missing or isn't shaped like one.
+    /// Govee's capability value shapes vary by type (plain numbers, nested objects for scenes), and
+    /// this app has already been bitten once by an unexpected response shape (see
+    /// <see cref="ThrowIfGoveeError"/>) — a single malformed field here should degrade to "unknown"
+    /// rather than take down the whole device card with an unhandled exception.
+    /// </summary>
+    private static int? TryReadInt(StateValueDto? state) =>
+        state is { Value.ValueKind: JsonValueKind.Number } && state.Value.TryGetInt32(out var value)
+            ? value
+            : null;
 }
