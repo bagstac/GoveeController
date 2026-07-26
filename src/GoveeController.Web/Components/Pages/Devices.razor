@@ -1,4 +1,5 @@
 @page "/"
+@implements IDisposable
 @using GoveeController.Application.Devices
 @using GoveeController.Domain.Devices
 @using GoveeController.Web.Components.Shared
@@ -8,9 +9,22 @@
 
 <div class="page-header">
     <h1>Devices</h1>
-    <button class="btn" disabled="@_refreshing" @onclick="RefreshAsync">
-        @(_refreshing ? "Refreshing…" : "↻ Refresh")
-    </button>
+    <div class="page-header-actions">
+        <label class="auto-refresh-label">
+            Auto-refresh:
+            <select value="@_autoRefreshSeconds" @onchange="OnAutoRefreshChanged">
+                <option value="0">Off</option>
+                <option value="30">30 seconds</option>
+                <option value="60">1 minute</option>
+                <option value="300">5 minutes</option>
+                <option value="600">10 minutes</option>
+                <option value="1800">30 minutes</option>
+            </select>
+        </label>
+        <button class="btn" disabled="@_refreshing" @onclick="RefreshAsync">
+            @(_refreshing ? "Refreshing…" : "↻ Refresh")
+        </button>
+    </div>
 </div>
 
 @if (_error is not null)
@@ -40,6 +54,8 @@ else
     private string? _error;
     private bool _refreshing;
     private int _refreshSignal;
+    private int _autoRefreshSeconds;
+    private System.Threading.Timer? _autoRefreshTimer;
 
     protected override async Task OnInitializedAsync()
     {
@@ -86,4 +102,53 @@ else
         var devices = await DeviceControlService.ListDevicesAsync(forceRefresh);
         return devices.Where(d => d.IsIndividualLight).ToList();
     }
+
+    private void OnAutoRefreshChanged(ChangeEventArgs e)
+    {
+        _autoRefreshSeconds = int.Parse((string)e.Value!);
+        RestartAutoRefreshTimer();
+    }
+
+    /// <summary>
+    /// (Re)configures the background timer backing the auto-refresh dropdown. Disposing and
+    /// recreating the timer (rather than reusing one via <c>Change</c>) keeps the "off" case
+    /// (interval &lt;= 0) trivial — no timer exists at all while auto-refresh is disabled.
+    /// </summary>
+    private void RestartAutoRefreshTimer()
+    {
+        _autoRefreshTimer?.Dispose();
+        _autoRefreshTimer = null;
+
+        if (_autoRefreshSeconds <= 0)
+        {
+            return;
+        }
+
+        var interval = TimeSpan.FromSeconds(_autoRefreshSeconds);
+        _autoRefreshTimer = new System.Threading.Timer(OnAutoRefreshTick, null, interval, interval);
+    }
+
+    /// <summary>
+    /// Timer callback — runs on a thread-pool thread, not the component's render sync context, so
+    /// the refresh (and the StateHasChanged it implicitly needs) must go through InvokeAsync. This
+    /// exists specifically to catch up on any command whose result never made it back to the UI
+    /// (e.g. a dropped click, or Govee's cloud state lagging behind an applied command).
+    /// </summary>
+    private void OnAutoRefreshTick(object? state)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            // Skip this tick rather than overlap if a refresh (manual or previous tick) is still
+            // in flight — the interval will simply catch the next one.
+            if (_refreshing)
+            {
+                return;
+            }
+
+            await RefreshAsync();
+        });
+    }
+
+    /// <inheritdoc />
+    public void Dispose() => _autoRefreshTimer?.Dispose();
 }
