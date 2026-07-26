@@ -52,6 +52,22 @@ what makes them unit-testable without a network connection or a database.
 - `Program.cs` — the composition root; also runs pending EF Core migrations on startup so the
   SQLite schema self-initializes on first run.
 
+## Security — read before deploying
+
+**This app has no login and no authentication of any kind, by design** (see "What this app does
+not do" below). Anyone who can reach its port can control every light on your Govee account, with
+no credential required.
+
+- Fine for a trusted home LAN — that's the intended deployment.
+- **Do not port-forward it or expose it to the internet.** An unauthenticated stranger would gain
+  full control of your lights, and could exhaust your Govee API key's rate limit as a side effect
+  (a denial-of-service on your own lights).
+- If you want to control your lights from outside your home network, put something *in front* of
+  this app that handles authentication — e.g. a reverse proxy (Caddy, nginx) with basic auth, or
+  better, a VPN/mesh network like Tailscale or WireGuard so the app is never internet-facing at
+  all. Don't build auth into this app itself for that; a proxy or VPN is simpler and harder to get
+  wrong.
+
 ## Getting a Govee API key
 
 1. Open the Govee Home app on your phone.
@@ -87,10 +103,13 @@ Shortcuts are persisted in a SQLite database on the `govee-data` named volume (m
 
 ## Running on a Raspberry Pi
 
-The Microsoft .NET Docker images used by the [Dockerfile](Dockerfile) are multi-arch and publish
-`linux/arm64` builds, so `docker build`/`docker compose build` automatically pulls the correct
-image for the Pi's CPU — no Dockerfile changes needed. Requires a **64-bit** Raspberry Pi OS (Pi 4
-or 5); 32-bit OS is not supported by the current .NET base images.
+Both `linux/arm64` (Pi 3/4/5 running 64-bit Raspberry Pi OS) and `linux/arm/v7` (32-bit-only
+boards, including the original **Pi 2**) are supported — the [CI workflow](.github/workflows/docker-publish.yml)
+publishes both architectures to GHCR on every push to `main`.
+
+**Recommended: pull the pre-built image** rather than building on the Pi itself. Building the
+.NET SDK locally is slow on any Pi and can be genuinely impractical on lower-RAM boards (the Pi 2
+has only 1GB total) — `dotnet publish` alone can approach that ceiling.
 
 1. Install Docker on the Pi, if not already installed:
 
@@ -99,45 +118,43 @@ or 5); 32-bit OS is not supported by the current .NET base images.
    sudo usermod -aG docker $USER   # log out/in afterward so `docker` works without sudo
    ```
 
-2. Clone the repo onto the Pi:
+2. Clone the repo (only for its `docker-compose.yml` files — nothing gets built on the Pi):
 
    ```bash
    git clone https://github.com/bagstac/GoveeController.git
    cd GoveeController
    ```
 
-3. Set up your API key, same as any Docker deployment (see above) — this is the only place the
-   key ever needs to live; it's never baked into the image or committed to the repo:
+3. Set up your API key — the only place it ever needs to live; it's never baked into the image or
+   committed to the repo:
 
    ```bash
    cp .env.example .env
    nano .env   # set GOVEE_API_KEY=...
    ```
 
-4. Build and start. Building the SDK image on a Pi is slower than on a desktop (expect several
-   minutes on first build) — that's normal, just let it finish:
+4. Start it with the pull-based compose override, [docker-compose.pull.yml](docker-compose.pull.yml)
+   — it swaps `docker-compose.yml`'s `build:` for the pre-built GHCR image, so this only ever
+   pulls, never builds, while still getting compose's healthcheck/restart-policy/named-volume
+   setup for free:
 
    ```bash
-   docker compose up --build -d
+   docker compose -f docker-compose.yml -f docker-compose.pull.yml up -d
    ```
 
 5. Open `http://<pi-ip-address>:8080` from any device on your network. Find the Pi's address with
    `hostname -I` if you don't already know it.
 
-The container restarts automatically on reboot (`restart: unless-stopped` in
-[docker-compose.yml](docker-compose.yml)), so once it's running you shouldn't need to touch the Pi
-again unless you're deploying an update — then it's just `git pull && docker compose up --build -d`.
-
-**Building faster (optional):** if the Pi's build times feel too slow for iterating on changes,
-build the image on a faster machine with Docker's `buildx` for the Pi's architecture, push it to a
-registry (Docker Hub, GHCR), and have the Pi just `docker pull` it instead of building locally:
+To pick up a later update:
 
 ```bash
-# On your dev machine, from the repo root:
-docker buildx build --platform linux/arm64 -t <your-registry>/govee-controller:latest --push .
-# On the Pi, point docker-compose.yml's `build:` at `image: <your-registry>/govee-controller:latest`
-# instead, then: docker compose pull && docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.pull.yml pull
+docker compose -f docker-compose.yml -f docker-compose.pull.yml up -d
 ```
+
+**Building from source instead** (e.g. if you're modifying the code) works the same way as any
+other Docker deployment — clone the repo and `docker compose up --build -d` — but expect it to be
+considerably slower than on a desktop, and best avoided entirely on a 1GB-RAM board like the Pi 2.
 
 ## Running locally without Docker
 
@@ -195,4 +212,4 @@ documents what to put in it.
   [developer.govee.com](https://developer.govee.com) if you later want to add local UDP control
   for lower latency.
 - **No app-level login.** The app assumes it's deployed on a trusted network or behind a reverse
-  proxy that handles access control; it does not authenticate users itself.
+  proxy that handles access control; it does not authenticate users itself. See "Security" above.

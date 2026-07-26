@@ -7,6 +7,11 @@ on:
     branches: [main]
   workflow_dispatch: {} # allows a manual run from the Actions tab, e.g. to rebuild without a code change
 
+# Least-privilege default for every job in this workflow; build-and-push narrows further by adding
+# packages: write only where it's actually needed to push the image.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/govee-controller
