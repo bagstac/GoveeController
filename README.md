@@ -85,6 +85,60 @@ Shortcuts are persisted in a SQLite database on the `govee-data` named volume (m
 `/data` in the container), so they survive `docker compose down`/`up` and image rebuilds — only
 `docker volume rm` clears them.
 
+## Running on a Raspberry Pi
+
+The Microsoft .NET Docker images used by the [Dockerfile](Dockerfile) are multi-arch and publish
+`linux/arm64` builds, so `docker build`/`docker compose build` automatically pulls the correct
+image for the Pi's CPU — no Dockerfile changes needed. Requires a **64-bit** Raspberry Pi OS (Pi 4
+or 5); 32-bit OS is not supported by the current .NET base images.
+
+1. Install Docker on the Pi, if not already installed:
+
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   sudo usermod -aG docker $USER   # log out/in afterward so `docker` works without sudo
+   ```
+
+2. Clone the repo onto the Pi:
+
+   ```bash
+   git clone https://github.com/bagstac/GoveeController.git
+   cd GoveeController
+   ```
+
+3. Set up your API key, same as any Docker deployment (see above) — this is the only place the
+   key ever needs to live; it's never baked into the image or committed to the repo:
+
+   ```bash
+   cp .env.example .env
+   nano .env   # set GOVEE_API_KEY=...
+   ```
+
+4. Build and start. Building the SDK image on a Pi is slower than on a desktop (expect several
+   minutes on first build) — that's normal, just let it finish:
+
+   ```bash
+   docker compose up --build -d
+   ```
+
+5. Open `http://<pi-ip-address>:8080` from any device on your network. Find the Pi's address with
+   `hostname -I` if you don't already know it.
+
+The container restarts automatically on reboot (`restart: unless-stopped` in
+[docker-compose.yml](docker-compose.yml)), so once it's running you shouldn't need to touch the Pi
+again unless you're deploying an update — then it's just `git pull && docker compose up --build -d`.
+
+**Building faster (optional):** if the Pi's build times feel too slow for iterating on changes,
+build the image on a faster machine with Docker's `buildx` for the Pi's architecture, push it to a
+registry (Docker Hub, GHCR), and have the Pi just `docker pull` it instead of building locally:
+
+```bash
+# On your dev machine, from the repo root:
+docker buildx build --platform linux/arm64 -t <your-registry>/govee-controller:latest --push .
+# On the Pi, point docker-compose.yml's `build:` at `image: <your-registry>/govee-controller:latest`
+# instead, then: docker compose pull && docker compose up -d
+```
+
 ## Running locally without Docker
 
 Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
