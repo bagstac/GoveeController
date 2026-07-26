@@ -23,7 +23,7 @@ else if (_devices is null)
 }
 else if (_devices.Count == 0)
 {
-    <p class="empty-state">No Govee devices found on this account.</p>
+    <p class="empty-state">No Govee light bulbs found on this account.</p>
 }
 else
 {
@@ -45,7 +45,7 @@ else
     {
         try
         {
-            _devices = await DeviceControlService.ListDevicesAsync();
+            _devices = await FetchIndividualLightsAsync();
         }
         catch (Exception ex)
         {
@@ -62,7 +62,7 @@ else
         _refreshing = true;
         try
         {
-            _devices = await DeviceControlService.ListDevicesAsync(forceRefresh: true);
+            _devices = await FetchIndividualLightsAsync(forceRefresh: true);
             _error = null;
             _refreshSignal++;
         }
@@ -74,5 +74,16 @@ else
         {
             _refreshing = false;
         }
+    }
+
+    /// <summary>
+    /// Lists devices, excluding Govee's group/scenic control surfaces (e.g. "Same-Model Group
+    /// Control", DreamView scenic groups) — this page only shows individual physical bulbs.
+    /// Those group/scenic devices are still selectable as shortcut targets on the Shortcuts page.
+    /// </summary>
+    private async Task<IReadOnlyList<Device>> FetchIndividualLightsAsync(bool forceRefresh = false)
+    {
+        var devices = await DeviceControlService.ListDevicesAsync(forceRefresh);
+        return devices.Where(d => d.IsIndividualLight).ToList();
     }
 }
