@@ -1,0 +1,78 @@
+@page "/"
+@using GoveeController.Application.Devices
+@using GoveeController.Domain.Devices
+@using GoveeController.Web.Components.Shared
+@inject IDeviceControlService DeviceControlService
+
+<PageTitle>Devices</PageTitle>
+
+<div class="page-header">
+    <h1>Devices</h1>
+    <button class="btn" disabled="@_refreshing" @onclick="RefreshAsync">
+        @(_refreshing ? "Refreshing…" : "↻ Refresh")
+    </button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="error-banner">@_error</div>
+}
+else if (_devices is null)
+{
+    <p><em>Loading devices…</em></p>
+}
+else if (_devices.Count == 0)
+{
+    <p class="empty-state">No Govee devices found on this account.</p>
+}
+else
+{
+    <div class="device-grid">
+        @foreach (var device in _devices)
+        {
+            <DeviceCard Device="device" @key="device.Id" RefreshSignal="_refreshSignal" />
+        }
+    </div>
+}
+
+@code {
+    private IReadOnlyList<Device>? _devices;
+    private string? _error;
+    private bool _refreshing;
+    private int _refreshSignal;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _devices = await DeviceControlService.ListDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load devices from Govee: {ex.Message}. Check that GOVEE_API_KEY is configured correctly.";
+        }
+    }
+
+    /// <summary>
+    /// Re-fetches the device list and bumps <see cref="_refreshSignal"/> so every <see cref="DeviceCard"/>
+    /// re-fetches its own state too, all bypassing the ~12s cache for an immediate, accurate read.
+    /// </summary>
+    private async Task RefreshAsync()
+    {
+        _refreshing = true;
+        try
+        {
+            _devices = await DeviceControlService.ListDevicesAsync(forceRefresh: true);
+            _error = null;
+            _refreshSignal++;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to refresh devices from Govee: {ex.Message}.";
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+}

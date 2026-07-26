@@ -1,0 +1,239 @@
+@* Self-contained control panel for a single Govee device: power toggle, brightness slider,
+   color/color-temperature pickers, and a dropdown of the device's Govee scenes. Loads its own
+   state and talks directly to IDeviceControlService, so the parent page only has to render one
+   <DeviceCard> per device. *@
+@using GoveeController.Application.Devices
+@using GoveeController.Domain.Devices
+@inject IDeviceControlService DeviceControlService
+
+<div class="card">
+    <h3>@Device.Name</h3>
+    <div class="sku">@Device.Sku</div>
+
+    @if (_error is not null)
+    {
+        <div class="error-banner">@_error</div>
+    }
+
+    @if (_state is null)
+    {
+        @if (_error is null)
+        {
+            <p><em>Loading state…</em></p>
+        }
+    }
+    else
+    {
+        @if (Device.SupportsPower)
+        {
+            <div class="control-row">
+                <label>Power</label>
+                <button class="toggle-btn @(_state.PowerOn ? "on" : "off")" @onclick="TogglePowerAsync" disabled="@_busy">
+                    @(_state.PowerOn ? "On" : "Off")
+                </button>
+            </div>
+        }
+
+        @if (Device.SupportsBrightness)
+        {
+            var brightnessCap = Device.Capabilities.First(c => c.Kind == CapabilityKind.Brightness);
+            <div class="control-row">
+                <label>Brightness</label>
+                <input type="range"
+                       min="@(brightnessCap.Min ?? 1)"
+                       max="@(brightnessCap.Max ?? 100)"
+                       value="@(_state.Brightness ?? brightnessCap.Min ?? 1)"
+                       disabled="@_busy"
+                       @onchange="OnBrightnessChangedAsync" />
+                <span>@(_state.Brightness ?? 0)%</span>
+            </div>
+        }
+
+        @if (Device.SupportsColorRgb)
+        {
+            <div class="control-row">
+                <label>Color</label>
+                <input type="color" value="@((_state.Color ?? new RgbColor(255, 255, 255)).ToHex())" disabled="@_busy" @onchange="OnColorChangedAsync" />
+            </div>
+        }
+
+        @if (Device.SupportsColorTemperature)
+        {
+            var tempCap = Device.Capabilities.First(c => c.Kind == CapabilityKind.ColorTemperature);
+            <div class="control-row">
+                <label>Warmth (K)</label>
+                <input type="range"
+                       min="@(tempCap.Min ?? 2000)"
+                       max="@(tempCap.Max ?? 9000)"
+                       step="100"
+                       value="@(_state.ColorTemperatureKelvin ?? tempCap.Min ?? 2000)"
+                       disabled="@_busy"
+                       @onchange="OnColorTemperatureChangedAsync" />
+                <span>@(_state.ColorTemperatureKelvin ?? 0)K</span>
+            </div>
+        }
+
+        @if (Device.SupportsScenes)
+        {
+            <div class="control-row">
+                <label>Scene</label>
+                @if (_scenes is null)
+                {
+                    <button class="btn" @onclick="LoadScenesAsync" disabled="@_busy">Load scenes…</button>
+                }
+                else if (_scenes.Count == 0)
+                {
+                    <span><em>No scenes configured</em></span>
+                }
+                else
+                {
+                    <select disabled="@_busy" @onchange="OnSceneSelectedAsync">
+                        <option value="">Choose a scene…</option>
+                        @foreach (var scene in _scenes)
+                        {
+                            <option value="@scene.Id">@scene.Name</option>
+                        }
+                    </select>
+                }
+            </div>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>The device this card controls. Required.</summary>
+    [Parameter, EditorRequired]
+    public required Device Device { get; set; }
+
+    /// <summary>
+    /// Bumped by the parent page's "Refresh" button to force this card to re-fetch state,
+    /// bypassing the cache. Any change in value (regardless of direction) triggers a refresh.
+    /// </summary>
+    [Parameter]
+    public int RefreshSignal { get; set; }
+
+    private int _lastRefreshSignal;
+    private LightState? _state;
+    private IReadOnlyList<GoveeScene>? _scenes;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _lastRefreshSignal = RefreshSignal;
+        await RefreshStateAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (RefreshSignal != _lastRefreshSignal)
+        {
+            _lastRefreshSignal = RefreshSignal;
+            await RefreshStateAsync(forceRefresh: true);
+        }
+    }
+
+    private async Task RefreshStateAsync(bool forceRefresh = false)
+    {
+        try
+        {
+            _state = await DeviceControlService.GetStateAsync(Device.Sku, Device.Id, forceRefresh);
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load state: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Runs a control command and, on success, applies <paramref name="applyOptimistically"/> to the
+    /// locally-held state instead of re-fetching it from Govee. Govee's cloud state read doesn't
+    /// always reflect a control command immediately — re-querying right after sending one can return
+    /// the pre-command value, making the UI look like the click did nothing. Since a successful
+    /// command call means Govee accepted and applied it, trusting the intended new value locally is
+    /// both faster and more reliable; the "Refresh" button (or the next scheduled poll) reconciles
+    /// with Govee's authoritative state if it ever drifts.
+    /// </summary>
+    private async Task RunCommandAsync(Func<Task> command, Func<LightState, LightState> applyOptimistically)
+    {
+        _busy = true;
+        try
+        {
+            await command();
+            if (_state is not null)
+            {
+                _state = applyOptimistically(_state);
+            }
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Command failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private Task TogglePowerAsync()
+    {
+        var turningOn = !_state!.PowerOn;
+        return RunCommandAsync(
+            () => turningOn ? DeviceControlService.TurnOnAsync(Device.Sku, Device.Id) : DeviceControlService.TurnOffAsync(Device.Sku, Device.Id),
+            s => s with { PowerOn = turningOn });
+    }
+
+    private Task OnBrightnessChangedAsync(ChangeEventArgs e)
+    {
+        var brightness = int.Parse((string)e.Value!);
+        return RunCommandAsync(
+            () => DeviceControlService.SetBrightnessAsync(Device.Sku, Device.Id, brightness),
+            s => s with { Brightness = brightness });
+    }
+
+    private Task OnColorChangedAsync(ChangeEventArgs e)
+    {
+        var color = RgbColor.FromHex((string)e.Value!);
+        return RunCommandAsync(
+            () => DeviceControlService.SetColorAsync(Device.Sku, Device.Id, color),
+            s => s with { Color = color });
+    }
+
+    private Task OnColorTemperatureChangedAsync(ChangeEventArgs e)
+    {
+        var kelvin = int.Parse((string)e.Value!);
+        return RunCommandAsync(
+            () => DeviceControlService.SetColorTemperatureAsync(Device.Sku, Device.Id, kelvin),
+            s => s with { ColorTemperatureKelvin = kelvin });
+    }
+
+    private async Task LoadScenesAsync()
+    {
+        try
+        {
+            _scenes = await DeviceControlService.ListScenesAsync(Device.Sku, Device.Id);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load scenes: {ex.Message}";
+        }
+    }
+
+    private Task OnSceneSelectedAsync(ChangeEventArgs e)
+    {
+        if (string.IsNullOrEmpty((string?)e.Value) || _scenes is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var sceneId = int.Parse((string)e.Value!);
+        var scene = _scenes.First(s => s.Id == sceneId);
+        // A scene's resulting brightness/color aren't known client-side, but activating one always
+        // turns the device on — reflect at least that much immediately rather than nothing.
+        return RunCommandAsync(
+            () => DeviceControlService.TriggerSceneAsync(Device.Sku, Device.Id, scene),
+            s => s with { PowerOn = true });
+    }
+}

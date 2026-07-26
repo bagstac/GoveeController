@@ -1,0 +1,24 @@
+## .NET
+bin/
+obj/
+*.user
+
+## Secrets - never commit real credentials
+.env
+
+## SQLite databases created by local runs
+*.db
+*.db-shm
+*.db-wal
+
+## ASP.NET Core Data Protection keys created by local runs
+keys/
+
+## IDE
+.vs/
+.vscode/
+*.suo
+
+## OS
+.DS_Store
+Thumbs.db

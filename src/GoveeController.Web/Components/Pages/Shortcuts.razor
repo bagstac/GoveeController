@@ -1,0 +1,361 @@
+@page "/shortcuts"
+@using GoveeController.Application.Devices
+@using GoveeController.Application.Shortcuts
+@using GoveeController.Domain.Devices
+@using GoveeController.Domain.Shortcuts
+@inject IShortcutService ShortcutService
+@inject IDeviceControlService DeviceControlService
+
+<PageTitle>Shortcuts</PageTitle>
+
+<h1>Shortcuts</h1>
+<p>Saved presets that set a device's power, brightness, and color in one click.</p>
+
+@if (_error is not null)
+{
+    <div class="error-banner">@_error</div>
+}
+
+@if (_shortcuts is null)
+{
+    <p><em>Loading shortcuts…</em></p>
+}
+else if (_shortcuts.Count == 0)
+{
+    <p class="empty-state">No shortcuts saved yet.</p>
+}
+else
+{
+    <div class="shortcut-list">
+        @foreach (var shortcut in _shortcuts)
+        {
+            <div class="shortcut-row">
+                <div>
+                    <strong>@shortcut.Name</strong>
+                    <div class="meta">
+                        @DeviceNamesFor(shortcut) &middot; @(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")
+                    </div>
+                </div>
+                <div>
+                    <button class="btn btn-primary" disabled="@_busy" @onclick="() => ApplyAsync(shortcut.Id)">Apply</button>
+                    <button class="btn" disabled="@_busy" @onclick="() => StartEdit(shortcut)">Edit</button>
+                    <button class="btn btn-danger" disabled="@_busy" @onclick="() => DeleteAsync(shortcut.Id)">Delete</button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<h2>@(_editingId is null ? "New shortcut" : "Edit shortcut")</h2>
+
+@if (_devices is null)
+{
+    @if (_error is null)
+    {
+        <p><em>Loading devices…</em></p>
+    }
+}
+else if (_devices.Count == 0)
+{
+    <p class="empty-state">No devices available to create a shortcut for.</p>
+}
+else
+{
+    <EditForm Model="_form" OnValidSubmit="SaveAsync">
+        <div class="form-grid">
+            <div>
+                <label>Name</label>
+                <InputText @bind-Value="_form.Name" placeholder="e.g. Movie Mode" />
+            </div>
+            <div>
+                <label>Devices</label>
+                <button type="button" class="btn device-picker-trigger" @onclick="() => _showDeviceModal = true">
+                    @DeviceDropdownSummary()
+                </button>
+            </div>
+            <div>
+                <label>Power</label>
+                <InputSelect @bind-Value="_form.PowerOn">
+                    <option value="true">On</option>
+                    <option value="false">Off</option>
+                </InputSelect>
+            </div>
+            <div>
+                <label>Brightness (optional)</label>
+                <InputNumber @bind-Value="_form.Brightness" min="1" max="100" />
+            </div>
+            <div>
+                <label>Color (optional)</label>
+                <InputText type="color" @bind-Value="_form.ColorHex" />
+            </div>
+            <div>
+                <label>Or color temp K (optional)</label>
+                <InputNumber @bind-Value="_form.ColorTemperatureKelvin" min="2000" max="9000" />
+            </div>
+        </div>
+        <p class="meta" style="margin-top:0.4rem;">Set either a color or a color temperature, not both.</p>
+        <button class="btn btn-primary" type="submit" disabled="@_busy" style="margin-top:0.5rem;">
+            @(_editingId is null ? "Save shortcut" : "Update shortcut")
+        </button>
+        @if (_editingId is not null)
+        {
+            <button class="btn" type="button" disabled="@_busy" style="margin-top:0.5rem;" @onclick="CancelEdit">Cancel</button>
+        }
+    </EditForm>
+
+    @if (_showDeviceModal)
+    {
+        <div class="modal-backdrop" @onclick="() => _showDeviceModal = false">
+            <div class="modal-panel" @onclick:stopPropagation="true">
+                <div class="modal-header">
+                    <h3>Select devices</h3>
+                    <button type="button" class="btn" @onclick="() => _showDeviceModal = false">✕</button>
+                </div>
+
+                <div class="modal-body">
+                    <h4>Bulbs</h4>
+                    <div class="device-checklist">
+                        @foreach (var device in _devices.Where(d => d.IsIndividualLight))
+                        {
+                            <label class="device-checklist-item">
+                                <input type="checkbox"
+                                       checked="@_form.SelectedDeviceIds.Contains(device.Id)"
+                                       @onchange="e => ToggleDevice(device.Id, (bool)e.Value!)" />
+                                @device.Name
+                            </label>
+                        }
+                    </div>
+
+                    @{
+                        var otherDevices = _devices.Where(d => !d.IsIndividualLight).ToList();
+                    }
+                    @if (otherDevices.Count > 0)
+                    {
+                        <h4>Groups &amp; scenes</h4>
+                        <div class="device-checklist">
+                            @foreach (var device in otherDevices)
+                            {
+                                <label class="device-checklist-item">
+                                    <input type="checkbox"
+                                           checked="@_form.SelectedDeviceIds.Contains(device.Id)"
+                                           @onchange="e => ToggleDevice(device.Id, (bool)e.Value!)" />
+                                    @device.Name
+                                </label>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" @onclick="() => _showDeviceModal = false">Done</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private IReadOnlyList<Shortcut>? _shortcuts;
+    private IReadOnlyList<Device>? _devices;
+    private readonly ShortcutFormModel _form = new();
+    private bool _busy;
+    private bool _showDeviceModal;
+    private string? _error;
+    private int? _editingId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _shortcuts = await ShortcutService.ListShortcutsAsync();
+            _devices = await DeviceControlService.ListDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load: {ex.Message}";
+        }
+    }
+
+    private async Task ApplyAsync(int id)
+    {
+        _busy = true;
+        try
+        {
+            await ShortcutService.ApplyShortcutAsync(id);
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to apply shortcut: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(int id)
+    {
+        _busy = true;
+        try
+        {
+            await ShortcutService.DeleteShortcutAsync(id);
+            _shortcuts = await ShortcutService.ListShortcutsAsync();
+            if (_editingId == id)
+            {
+                ResetForm();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to delete shortcut: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_devices is null)
+        {
+            return;
+        }
+
+        var targets = _devices
+            .Where(d => _form.SelectedDeviceIds.Contains(d.Id))
+            .Select(d => (d.Sku, d.Id))
+            .ToList();
+        if (targets.Count == 0)
+        {
+            _error = "Select at least one device.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            RgbColor? color = string.IsNullOrWhiteSpace(_form.ColorHex) ? null : RgbColor.FromHex(_form.ColorHex);
+            if (color is not null && _form.ColorTemperatureKelvin is not null)
+            {
+                _error = "Set either a color or a color temperature, not both.";
+                return;
+            }
+
+            if (_editingId is { } id)
+            {
+                await ShortcutService.UpdateShortcutAsync(
+                    id,
+                    _form.Name,
+                    targets,
+                    _form.PowerOn,
+                    _form.Brightness,
+                    color,
+                    _form.ColorTemperatureKelvin);
+            }
+            else
+            {
+                await ShortcutService.CreateShortcutAsync(
+                    _form.Name,
+                    targets,
+                    _form.PowerOn,
+                    _form.Brightness,
+                    color,
+                    _form.ColorTemperatureKelvin);
+            }
+
+            _shortcuts = await ShortcutService.ListShortcutsAsync();
+            ResetForm();
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to save shortcut: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void StartEdit(Shortcut shortcut)
+    {
+        _editingId = shortcut.Id;
+        _form.Name = shortcut.Name;
+        _form.SelectedDeviceIds.Clear();
+        foreach (var target in shortcut.Targets)
+        {
+            _form.SelectedDeviceIds.Add(target.DeviceId);
+        }
+        _form.PowerOn = shortcut.PowerOn;
+        _form.Brightness = shortcut.Brightness;
+        _form.ColorHex = shortcut.ColorRgbPacked is { } packed ? RgbColor.FromPackedInt(packed).ToHex() : string.Empty;
+        _form.ColorTemperatureKelvin = shortcut.ColorTemperatureKelvin;
+        _error = null;
+    }
+
+    private void CancelEdit()
+    {
+        ResetForm();
+        _error = null;
+    }
+
+    private void ResetForm()
+    {
+        _editingId = null;
+        _form.Name = string.Empty;
+        _form.SelectedDeviceIds.Clear();
+        _form.PowerOn = true;
+        _form.Brightness = null;
+        _form.ColorHex = string.Empty;
+        _form.ColorTemperatureKelvin = null;
+    }
+
+    private void ToggleDevice(string deviceId, bool isSelected)
+    {
+        if (isSelected)
+        {
+            _form.SelectedDeviceIds.Add(deviceId);
+        }
+        else
+        {
+            _form.SelectedDeviceIds.Remove(deviceId);
+        }
+    }
+
+    private string DeviceDropdownSummary()
+    {
+        var count = _form.SelectedDeviceIds.Count;
+        return count switch
+        {
+            0 => "Select devices…",
+            1 => "1 device selected",
+            _ => $"{count} devices selected"
+        };
+    }
+
+    private string DeviceNamesFor(Shortcut shortcut)
+    {
+        if (_devices is null)
+        {
+            return $"{shortcut.Targets.Count} device(s)";
+        }
+
+        var names = shortcut.Targets
+            .Select(t => _devices.FirstOrDefault(d => d.Id == t.DeviceId)?.Name ?? t.DeviceSku)
+            .ToList();
+        return string.Join(", ", names);
+    }
+
+    /// <summary>Backing model for the "new shortcut" form; kept simple/flat for Blazor's EditForm binding.</summary>
+    private sealed class ShortcutFormModel
+    {
+        public string Name { get; set; } = string.Empty;
+        public HashSet<string> SelectedDeviceIds { get; } = [];
+        public bool PowerOn { get; set; } = true;
+        public int? Brightness { get; set; }
+        public string ColorHex { get; set; } = string.Empty;
+        public int? ColorTemperatureKelvin { get; set; }
+    }
+}

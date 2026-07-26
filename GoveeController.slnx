@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GoveeController.Application/GoveeController.Application.csproj" />
+    <Project Path="src/GoveeController.Domain/GoveeController.Domain.csproj" />
+    <Project Path="src/GoveeController.Infrastructure/GoveeController.Infrastructure.csproj" />
+    <Project Path="src/GoveeController.Web/GoveeController.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GoveeController.Application.Tests/GoveeController.Application.Tests.csproj" />
+  </Folder>
+</Solution>

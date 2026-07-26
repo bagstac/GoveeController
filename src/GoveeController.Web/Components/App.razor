@@ -1,0 +1,31 @@
+﻿@using Microsoft.AspNetCore.Components
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["GoveeController.Web.styles.css"]" />
+    <ImportMap />
+    <HeadOutlet @rendermode="@NoPrerender" />
+</head>
+
+<body>
+    <Routes @rendermode="@NoPrerender" />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>
+
+@code {
+    // Prerendering renders the initial HTML statically before the SignalR circuit connects, which
+    // creates a window where buttons/inputs are visible but not yet wired to any event handler —
+    // a click during that window is silently dropped, requiring a second click to "wake up" the
+    // component. This is an always-on control panel with no SEO or first-paint need for prerendering,
+    // so it's disabled entirely to make every click work on the first try.
+    private static readonly IComponentRenderMode NoPrerender = new InteractiveServerRenderMode(prerender: false);
+}

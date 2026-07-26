@@ -1,0 +1,17 @@
+services:
+  govee-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: govee-controller:latest
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Persists the SQLite shortcuts database across container recreation.
+      - govee-data:/data
+    restart: unless-stopped
+
+volumes:
+  govee-data:
