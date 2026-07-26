@@ -151,9 +151,11 @@ else
 
     /// <summary>
     /// Timer callback — runs on a thread-pool thread, not the component's render sync context, so
-    /// the refresh (and the StateHasChanged it implicitly needs) must go through InvokeAsync. This
-    /// exists specifically to catch up on any command whose result never made it back to the UI
-    /// (e.g. a dropped click, or Govee's cloud state lagging behind an applied command).
+    /// updating state has to go through InvokeAsync. Unlike a normal @onclick handler, code invoked
+    /// this way does NOT automatically re-render afterward — StateHasChanged() must be called
+    /// explicitly, otherwise the refreshed data lands in the component's fields but the browser
+    /// never repaints. This exists specifically to catch up on any command whose result never made
+    /// it back to the UI (e.g. a dropped click, or Govee's cloud state lagging behind an applied command).
     /// </summary>
     private void OnAutoRefreshTick(object? state)
     {
@@ -167,6 +169,7 @@ else
             }
 
             await RefreshAsync();
+            StateHasChanged();
         });
     }
 
