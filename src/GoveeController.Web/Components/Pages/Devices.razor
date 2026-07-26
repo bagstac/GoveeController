@@ -4,6 +4,7 @@
 @using GoveeController.Domain.Devices
 @using GoveeController.Web.Components.Shared
 @inject IDeviceControlService DeviceControlService
+@inject IJSRuntime JSRuntime
 
 <PageTitle>Devices</PageTitle>
 
@@ -22,9 +23,9 @@
                     <option value="1800">30 minutes</option>
                 </select>
             </label>
-            @if (_lastRefreshedAt is { } lastRefreshedAt)
+            @if (_lastRefreshedLocalTime is not null)
             {
-                <span class="last-refreshed">Last refreshed @lastRefreshedAt.ToLocalTime().ToString("h:mm:ss tt")</span>
+                <span class="last-refreshed">Last refreshed @_lastRefreshedLocalTime</span>
             }
         </div>
         <button class="btn" disabled="@_refreshing" @onclick="RefreshAsync">
@@ -62,14 +63,14 @@ else
     private int _refreshSignal;
     private int _autoRefreshSeconds;
     private System.Threading.Timer? _autoRefreshTimer;
-    private DateTime? _lastRefreshedAt;
+    private string? _lastRefreshedLocalTime;
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             _devices = await FetchIndividualLightsAsync();
-            _lastRefreshedAt = DateTime.UtcNow;
+            await RecordRefreshTimeAsync();
         }
         catch (Exception ex)
         {
@@ -89,7 +90,7 @@ else
             _devices = await FetchIndividualLightsAsync(forceRefresh: true);
             _error = null;
             _refreshSignal++;
-            _lastRefreshedAt = DateTime.UtcNow;
+            await RecordRefreshTimeAsync();
         }
         catch (Exception ex)
         {
@@ -99,6 +100,17 @@ else
         {
             _refreshing = false;
         }
+    }
+
+    /// <summary>
+    /// Formats "now" in the viewer's own browser timezone via JS interop — Blazor Server runs
+    /// entirely server-side, so DateTime.Now/ToLocalTime() would use the server's timezone instead,
+    /// which may not match whoever is looking at the page.
+    /// </summary>
+    private async Task RecordRefreshTimeAsync()
+    {
+        var utcNowIso = DateTime.UtcNow.ToString("o");
+        _lastRefreshedLocalTime = await JSRuntime.InvokeAsync<string>("goveeController.formatLocalTime", utcNowIso);
     }
 
     /// <summary>
