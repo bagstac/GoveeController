@@ -38,6 +38,13 @@ RUN case "$TARGETARCH$TARGETVARIANT" in \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
+# curl backs the HEALTHCHECK below (docker-compose.yml's healthcheck: hits the same /health
+# endpoint). The base image has neither curl nor wget; --no-install-recommends keeps this small,
+# which matters on constrained hardware like a Raspberry Pi 2.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/publish .
 
 # Microsoft's aspnet runtime image ships a built-in non-root "app" user (UID 64198) for exactly
@@ -48,5 +55,8 @@ USER app
 ENV ASPNETCORE_HTTP_PORTS=8080
 ENV ConnectionStrings__ShortcutsDb="Data Source=/data/shortcuts.db"
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["dotnet", "GoveeController.Web.dll"]

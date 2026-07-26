@@ -1,0 +1,4 @@
+services:
+  govee-controller:
+    build: !reset null
+    image: ghcr.io/bagstac/govee-controller:latest

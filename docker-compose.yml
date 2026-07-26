@@ -12,6 +12,15 @@ services:
       # Persists the SQLite shortcuts database across container recreation.
       - govee-data:/data
     restart: unless-stopped
+    # The Dockerfile already declares a HEALTHCHECK (hitting /health); Compose picks that up
+    # automatically. `restart: unless-stopped` only recovers from a crash on its own — combined
+    # with the healthcheck, Docker also restarts a container that's still running but unresponsive.
+    deploy:
+      resources:
+        limits:
+          # Conservative cap with the smallest realistic deployment target in mind — a Raspberry
+          # Pi 2 has only 1GB of RAM total for the whole system, not just this container.
+          memory: 512M
 
 volumes:
   govee-data:
