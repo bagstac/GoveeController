@@ -163,6 +163,16 @@ Covers `DeviceControlService`'s caching/invalidation behavior, `ShortcutService`
 apply logic (all mocked, no network/DB), and `GoveeApiClient`'s request/response mapping against a
 fake `HttpMessageHandler` (verifies headers, request bodies, and error propagation).
 
+## Continuous deployment
+
+[.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) runs on every push to
+`main`: it runs the test suite as a gate, then builds and pushes a multi-arch image (`linux/amd64`
+and `linux/arm/v7`, so it covers Raspberry Pi) to
+[ghcr.io/bagstac/govee-controller](https://github.com/bagstac/GoveeController/pkgs/container/govee-controller)
+tagged `latest` and with the commit SHA. Nothing needs to be built locally to deploy a new
+version — just `docker pull ghcr.io/bagstac/govee-controller:latest` wherever it's running (see
+the Raspberry Pi section above for the exact `docker run` command).
+
 ## Configuration reference
 
 | Setting | Env var (Docker) | Purpose |
