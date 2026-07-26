@@ -14,6 +14,10 @@ obj/
 ## ASP.NET Core Data Protection keys created by local runs
 keys/
 
+## Docker bind-mount host directory (docker-compose.yml mounts this onto /data) — contains the
+## SQLite db and keys/ above, but ignore the whole directory since it's host-only, never checked in
+/data/
+
 ## IDE
 .vs/
 .vscode/

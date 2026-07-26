@@ -9,8 +9,11 @@ services:
     env_file:
       - .env
     volumes:
-      # Persists the SQLite shortcuts database across container recreation.
-      - govee-data:/data
+      # Bind-mounted to a host directory (not a Docker-managed named volume) so the SQLite
+      # database is a real, directly accessible file on the host filesystem — easy to back up,
+      # inspect, or move without going through Docker at all. See README's "Configuration
+      # reference" for the host-side directory permissions this requires.
+      - ./data:/data
     restart: unless-stopped
     # The Dockerfile already declares a HEALTHCHECK (hitting /health); Compose picks that up
     # automatically. `restart: unless-stopped` only recovers from a crash on its own — combined
@@ -21,6 +24,3 @@ services:
           # Conservative cap with the smallest realistic deployment target in mind — a Raspberry
           # Pi 2 has only 1GB of RAM total for the whole system, not just this container.
           memory: 512M
-
-volumes:
-  govee-data:

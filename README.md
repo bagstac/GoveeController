@@ -89,17 +89,26 @@ hit `429 Too Many Requests` anyway, the resilience handler retries with backoff 
    # then edit .env and set GOVEE_API_KEY=...
    ```
 
-2. Build and start:
+2. Create the host directory the SQLite database will live in, owned by the container's
+   non-root user (UID/GID 1654 — see [Dockerfile](Dockerfile)):
+
+   ```bash
+   mkdir -p data
+   sudo chown 1654:1654 data   # skip sudo if your user already owns it and that's fine locally
+   ```
+
+3. Build and start:
 
    ```bash
    docker compose up --build
    ```
 
-3. Open <http://localhost:8080>.
+4. Open <http://localhost:8080>.
 
-Shortcuts are persisted in a SQLite database on the `govee-data` named volume (mounted at
-`/data` in the container), so they survive `docker compose down`/`up` and image rebuilds — only
-`docker volume rm` clears them.
+Shortcuts are persisted in `./data/shortcuts.db` — a real file on the host filesystem
+([bind-mounted](https://docs.docker.com/engine/storage/bind-mounts/), not a Docker-managed named
+volume — see "Configuration reference" below), so they survive `docker compose down`/`up` and
+image rebuilds, and can be backed up, inspected, or moved without touching Docker at all.
 
 ## Running on a Raspberry Pi
 
@@ -133,9 +142,10 @@ has only 1GB total) — `dotnet publish` alone can approach that ceiling.
    nano .env   # set GOVEE_API_KEY=...
    ```
 
-4. Start it with the pull-based compose override, [docker-compose.pull.yml](docker-compose.pull.yml)
+4. Create the host `./data` directory the same way as in "Running with Docker" above (step 2),
+   then start it with the pull-based compose override, [docker-compose.pull.yml](docker-compose.pull.yml)
    — it swaps `docker-compose.yml`'s `build:` for the pre-built GHCR image, so this only ever
-   pulls, never builds, while still getting compose's healthcheck/restart-policy/named-volume
+   pulls, never builds, while still getting compose's healthcheck/restart-policy/bind-mount
    setup for free:
 
    ```bash
@@ -187,8 +197,8 @@ fake `HttpMessageHandler` (verifies headers, request bodies, and error propagati
 and `linux/arm/v7`, so it covers Raspberry Pi) to
 [ghcr.io/bagstac/govee-controller](https://github.com/bagstac/GoveeController/pkgs/container/govee-controller)
 tagged `latest` and with the commit SHA. Nothing needs to be built locally to deploy a new
-version — just `docker pull ghcr.io/bagstac/govee-controller:latest` wherever it's running (see
-the Raspberry Pi section above for the exact `docker run` command).
+version — just re-pull and restart via the `docker compose ... pull` / `up -d` commands in the
+Raspberry Pi section above (or `docker compose up --build -d` if you built from source).
 
 ## Configuration reference
 
@@ -196,6 +206,7 @@ the Raspberry Pi section above for the exact `docker run` command).
 |---|---|---|
 | `Govee:ApiKey` | `GOVEE_API_KEY` | Required. Your Govee Cloud API key. |
 | `ConnectionStrings:ShortcutsDb` | `ConnectionStrings__ShortcutsDb` | SQLite connection string. Defaults to `/data/shortcuts.db` in the container (see `Dockerfile`). |
+| — | *(host-side)* `./data` directory | Bind-mounted onto `/data` by `docker-compose.yml`, so `shortcuts.db` and the Data Protection `keys/` folder live directly on the host. Must be owned by UID/GID 1654 (the container's non-root `app` user) before first run — see "Running with Docker" above. |
 
 `GOVEE_API_KEY` is bridged to the `Govee:ApiKey` configuration key explicitly in `Program.cs`,
 since ASP.NET Core's environment-variable provider normally expects double-underscore names

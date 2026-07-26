@@ -47,8 +47,12 @@ RUN apt-get update \
 
 COPY --from=build /app/publish .
 
-# Microsoft's aspnet runtime image ships a built-in non-root "app" user (UID 64198) for exactly
-# this purpose — least-privilege container, no need to create our own.
+# Microsoft's aspnet runtime image ships a built-in non-root "app" user (UID/GID 1654) for
+# exactly this purpose — least-privilege container, no need to create our own. This chown only
+# takes effect when /data is a plain directory baked into the image; when docker-compose.yml
+# bind-mounts a host directory over it instead, the host directory's own ownership governs
+# instead (a bind mount doesn't inherit anything from the image at that path) — see README's
+# "Configuration reference" for the `chown 1654:1654` step that needs on the host.
 RUN mkdir -p /data && chown app:app /data
 USER app
 
