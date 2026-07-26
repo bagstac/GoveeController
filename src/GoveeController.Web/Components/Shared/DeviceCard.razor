@@ -2,9 +2,11 @@
    color/color-temperature pickers, and a dropdown of the device's Govee scenes. Loads its own
    state and talks directly to IDeviceControlService, so the parent page only has to render one
    <DeviceCard> per device. *@
+@implements IDisposable
 @using GoveeController.Application.Devices
 @using GoveeController.Domain.Devices
 @inject IDeviceControlService DeviceControlService
+@inject ILogger<DeviceCard> Logger
 
 <div class="card">
     <h3>@Device.Name</h3>
@@ -127,6 +129,10 @@
     private bool _busy;
     private string? _error;
 
+    // Cancelled on Dispose so an in-flight Govee call for a card the user has navigated away from
+    // doesn't run to completion and then touch a disposed component.
+    private readonly CancellationTokenSource _cts = new();
+
     protected override async Task OnInitializedAsync()
     {
         _lastRefreshSignal = RefreshSignal;
@@ -151,30 +157,25 @@
 
     /// <summary>
     /// Applies whichever fields of a bulk command this device supports, one at a time through the
-    /// same optimistic-update path as its own controls, and simply skips fields it doesn't support
-    /// (e.g. a bulk color change is a no-op on a white-only fixture).
+    /// same optimistic-update path as its own controls (see the private Set*Async helpers below,
+    /// shared with the individual per-control handlers), and simply skips fields it doesn't
+    /// support (e.g. a bulk color change is a no-op on a white-only fixture).
     /// </summary>
     private async Task ApplyBulkCommandAsync(BulkLightCommand command)
     {
         if (command.Brightness is { } brightness && Device.SupportsBrightness)
         {
-            await RunCommandAsync(
-                () => DeviceControlService.SetBrightnessAsync(Device.Sku, Device.Id, brightness),
-                s => s with { Brightness = brightness });
+            await SetBrightnessAsync(brightness);
         }
 
         if (command.Color is { } color && Device.SupportsColorRgb)
         {
-            await RunCommandAsync(
-                () => DeviceControlService.SetColorAsync(Device.Sku, Device.Id, color),
-                s => s with { Color = color });
+            await SetColorAsync(color);
         }
 
         if (command.ColorTemperatureKelvin is { } kelvin && Device.SupportsColorTemperature)
         {
-            await RunCommandAsync(
-                () => DeviceControlService.SetColorTemperatureAsync(Device.Sku, Device.Id, kelvin),
-                s => s with { ColorTemperatureKelvin = kelvin });
+            await SetColorTemperatureAsync(kelvin);
         }
     }
 
@@ -182,12 +183,12 @@
     {
         try
         {
-            _state = await DeviceControlService.GetStateAsync(Device.Sku, Device.Id, forceRefresh);
+            _state = await DeviceControlService.GetStateAsync(Device.Sku, Device.Id, forceRefresh, _cts.Token);
             _error = null;
         }
         catch (Exception ex)
         {
-            _error = $"Failed to load state: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Loading state");
         }
     }
 
@@ -214,7 +215,7 @@
         }
         catch (Exception ex)
         {
-            _error = $"Command failed: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Command");
         }
         finally
         {
@@ -226,43 +227,44 @@
     {
         var turningOn = !_state!.PowerOn;
         return RunCommandAsync(
-            () => turningOn ? DeviceControlService.TurnOnAsync(Device.Sku, Device.Id) : DeviceControlService.TurnOffAsync(Device.Sku, Device.Id),
+            () => turningOn
+                ? DeviceControlService.TurnOnAsync(Device.Sku, Device.Id, _cts.Token)
+                : DeviceControlService.TurnOffAsync(Device.Sku, Device.Id, _cts.Token),
             s => s with { PowerOn = turningOn });
     }
 
-    private Task OnBrightnessChangedAsync(ChangeEventArgs e)
-    {
-        var brightness = int.Parse((string)e.Value!);
-        return RunCommandAsync(
-            () => DeviceControlService.SetBrightnessAsync(Device.Sku, Device.Id, brightness),
+    private Task OnBrightnessChangedAsync(ChangeEventArgs e) => SetBrightnessAsync(int.Parse((string)e.Value!));
+
+    private Task OnColorChangedAsync(ChangeEventArgs e) => SetColorAsync(RgbColor.FromHex((string)e.Value!));
+
+    private Task OnColorTemperatureChangedAsync(ChangeEventArgs e) => SetColorTemperatureAsync(int.Parse((string)e.Value!));
+
+    // Shared by both the per-control @onchange handlers above and ApplyBulkCommandAsync, so the
+    // two paths can't drift apart on what "set brightness/color/color-temperature" actually means.
+    private Task SetBrightnessAsync(int brightness) =>
+        RunCommandAsync(
+            () => DeviceControlService.SetBrightnessAsync(Device.Sku, Device.Id, brightness, _cts.Token),
             s => s with { Brightness = brightness });
-    }
 
-    private Task OnColorChangedAsync(ChangeEventArgs e)
-    {
-        var color = RgbColor.FromHex((string)e.Value!);
-        return RunCommandAsync(
-            () => DeviceControlService.SetColorAsync(Device.Sku, Device.Id, color),
+    private Task SetColorAsync(RgbColor color) =>
+        RunCommandAsync(
+            () => DeviceControlService.SetColorAsync(Device.Sku, Device.Id, color, _cts.Token),
             s => s with { Color = color });
-    }
 
-    private Task OnColorTemperatureChangedAsync(ChangeEventArgs e)
-    {
-        var kelvin = int.Parse((string)e.Value!);
-        return RunCommandAsync(
-            () => DeviceControlService.SetColorTemperatureAsync(Device.Sku, Device.Id, kelvin),
+    private Task SetColorTemperatureAsync(int kelvin) =>
+        RunCommandAsync(
+            () => DeviceControlService.SetColorTemperatureAsync(Device.Sku, Device.Id, kelvin, _cts.Token),
             s => s with { ColorTemperatureKelvin = kelvin });
-    }
 
     private async Task LoadScenesAsync()
     {
         try
         {
-            _scenes = await DeviceControlService.ListScenesAsync(Device.Sku, Device.Id);
+            _scenes = await DeviceControlService.ListScenesAsync(Device.Sku, Device.Id, _cts.Token);
         }
         catch (Exception ex)
         {
-            _error = $"Failed to load scenes: {ex.Message}";
+            _error = UserFacingError.From(ex, Logger, "Loading scenes");
         }
     }
 
@@ -278,7 +280,14 @@
         // A scene's resulting brightness/color aren't known client-side, but activating one always
         // turns the device on — reflect at least that much immediately rather than nothing.
         return RunCommandAsync(
-            () => DeviceControlService.TriggerSceneAsync(Device.Sku, Device.Id, scene),
+            () => DeviceControlService.TriggerSceneAsync(Device.Sku, Device.Id, scene, _cts.Token),
             s => s with { PowerOn = true });
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
     }
 }

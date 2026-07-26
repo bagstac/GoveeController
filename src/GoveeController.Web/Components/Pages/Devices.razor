@@ -1,10 +1,11 @@
 @page "/"
-@implements IDisposable
+@implements IAsyncDisposable
 @using GoveeController.Application.Devices
 @using GoveeController.Domain.Devices
 @using GoveeController.Web.Components.Shared
 @inject IDeviceControlService DeviceControlService
 @inject IJSRuntime JSRuntime
+@inject ILogger<Devices> Logger
 
 <PageTitle>Devices</PageTitle>
 
@@ -97,6 +98,10 @@ else
     private int _bulkCommandId;
     private BulkLightCommand? _bulkCommand;
 
+    // Cancelled on dispose so an in-flight Govee call doesn't run to completion and then touch a
+    // disposed component (e.g. the user navigating away mid-refresh).
+    private readonly CancellationTokenSource _cts = new();
+
     /// <summary>
     /// Bulk brightness slider bounds, as the intersection across every bulb that supports
     /// brightness — the most restrictive lower bound and upper bound of all of them, so any value
@@ -125,7 +130,7 @@ else
         }
         catch (Exception ex)
         {
-            _error = $"Failed to load devices from Govee: {ex.Message}. Check that GOVEE_API_KEY is configured correctly.";
+            _error = UserFacingError.From(ex, Logger, "Loading devices");
         }
     }
 
@@ -145,7 +150,7 @@ else
         }
         catch (Exception ex)
         {
-            _error = $"Failed to refresh devices from Govee: {ex.Message}.";
+            _error = UserFacingError.From(ex, Logger, "Refreshing devices");
         }
         finally
         {
@@ -194,7 +199,7 @@ else
     /// </summary>
     private async Task<IReadOnlyList<Device>> FetchIndividualLightsAsync(bool forceRefresh = false)
     {
-        var devices = await DeviceControlService.ListDevicesAsync(forceRefresh);
+        var devices = await DeviceControlService.ListDevicesAsync(forceRefresh, _cts.Token);
         return devices.Where(d => d.IsIndividualLight).ToList();
     }
 
@@ -248,5 +253,21 @@ else
     }
 
     /// <inheritdoc />
-    public void Dispose() => _autoRefreshTimer?.Dispose();
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+
+        if (_autoRefreshTimer is null)
+        {
+            return;
+        }
+
+        // Timer.DisposeAsync (unlike the synchronous Dispose) waits for any callback that's
+        // already running to finish before returning, instead of just stopping future ticks. That
+        // matters here specifically: OnAutoRefreshTick calls InvokeAsync against this component,
+        // and if disposal raced ahead of an in-flight tick, that InvokeAsync call would run against
+        // a component already torn down, throwing ObjectDisposedException.
+        await _autoRefreshTimer.DisposeAsync();
+    }
 }
