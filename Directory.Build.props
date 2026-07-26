@@ -1,0 +1,23 @@
+<Project>
+  <!--
+    Shared MSBuild properties for every project in the solution. Individual .csproj files keep
+    only what's actually specific to them (package references, project references, and any
+    property that genuinely differs — e.g. GenerateDocumentationFile is only set on the three
+    library projects, not the Web or test projects).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    The build is at zero warnings as of this writing — lock that in so it can't silently erode.
+    Scoped to CI only (dotnet build/test/publish -p:ContinuousIntegrationBuild=true, or CI=true in
+    most CI runners, which the .NET SDK picks up automatically) so an in-progress local build with
+    a stray unused-variable warning still runs/builds instead of hard-failing mid-edit.
+  -->
+  <PropertyGroup Condition="'$(ContinuousIntegrationBuild)' == 'true' OR '$(CI)' == 'true'">
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
