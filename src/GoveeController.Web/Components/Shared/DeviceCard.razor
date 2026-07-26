@@ -112,7 +112,16 @@
     [Parameter]
     public int RefreshSignal { get; set; }
 
+    /// <summary>
+    /// A "set this on every bulb" instruction broadcast from the Devices page's bulk controls. A
+    /// new <see cref="BulkLightCommand.Id"/> triggers applying whichever fields are populated, for
+    /// whichever of them this device actually supports.
+    /// </summary>
+    [Parameter]
+    public BulkLightCommand? BulkCommand { get; set; }
+
     private int _lastRefreshSignal;
+    private int _lastBulkCommandId;
     private LightState? _state;
     private IReadOnlyList<GoveeScene>? _scenes;
     private bool _busy;
@@ -121,6 +130,7 @@
     protected override async Task OnInitializedAsync()
     {
         _lastRefreshSignal = RefreshSignal;
+        _lastBulkCommandId = BulkCommand?.Id ?? 0;
         await RefreshStateAsync();
     }
 
@@ -130,6 +140,41 @@
         {
             _lastRefreshSignal = RefreshSignal;
             await RefreshStateAsync(forceRefresh: true);
+        }
+
+        if (BulkCommand is { } bulkCommand && bulkCommand.Id != _lastBulkCommandId)
+        {
+            _lastBulkCommandId = bulkCommand.Id;
+            await ApplyBulkCommandAsync(bulkCommand);
+        }
+    }
+
+    /// <summary>
+    /// Applies whichever fields of a bulk command this device supports, one at a time through the
+    /// same optimistic-update path as its own controls, and simply skips fields it doesn't support
+    /// (e.g. a bulk color change is a no-op on a white-only fixture).
+    /// </summary>
+    private async Task ApplyBulkCommandAsync(BulkLightCommand command)
+    {
+        if (command.Brightness is { } brightness && Device.SupportsBrightness)
+        {
+            await RunCommandAsync(
+                () => DeviceControlService.SetBrightnessAsync(Device.Sku, Device.Id, brightness),
+                s => s with { Brightness = brightness });
+        }
+
+        if (command.Color is { } color && Device.SupportsColorRgb)
+        {
+            await RunCommandAsync(
+                () => DeviceControlService.SetColorAsync(Device.Sku, Device.Id, color),
+                s => s with { Color = color });
+        }
+
+        if (command.ColorTemperatureKelvin is { } kelvin && Device.SupportsColorTemperature)
+        {
+            await RunCommandAsync(
+                () => DeviceControlService.SetColorTemperatureAsync(Device.Sku, Device.Id, kelvin),
+                s => s with { ColorTemperatureKelvin = kelvin });
         }
     }
 

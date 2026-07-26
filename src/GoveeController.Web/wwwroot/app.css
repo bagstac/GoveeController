@@ -78,6 +78,10 @@ h1:focus {
     margin: 0 0 0.25rem;
 }
 
+.bulk-controls {
+    margin-bottom: 1.25rem;
+}
+
 .card .sku {
     color: #888;
     font-size: 0.8rem;

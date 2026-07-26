@@ -48,10 +48,37 @@ else if (_devices.Count == 0)
 }
 else
 {
+    <div class="card bulk-controls">
+        <h3>Set All Bulbs</h3>
+        <div class="control-row">
+            <label>Brightness</label>
+            <input type="range"
+                   min="@BulkBrightnessMin"
+                   max="@BulkBrightnessMax"
+                   value="@_bulkBrightness"
+                   @onchange="OnBulkBrightnessChanged" />
+            <span>@_bulkBrightness%</span>
+        </div>
+        <div class="control-row">
+            <label>Color</label>
+            <input type="color" value="@_bulkColorHex" @onchange="OnBulkColorChanged" />
+        </div>
+        <div class="control-row">
+            <label>Warmth (K)</label>
+            <input type="range"
+                   min="@BulkColorTemperatureMin"
+                   max="@BulkColorTemperatureMax"
+                   step="100"
+                   value="@_bulkColorTemperatureKelvin"
+                   @onchange="OnBulkColorTemperatureChanged" />
+            <span>@_bulkColorTemperatureKelvin K</span>
+        </div>
+    </div>
+
     <div class="device-grid">
         @foreach (var device in _devices)
         {
-            <DeviceCard Device="device" @key="device.Id" RefreshSignal="_refreshSignal" />
+            <DeviceCard Device="device" @key="device.Id" RefreshSignal="_refreshSignal" BulkCommand="_bulkCommand" />
         }
     </div>
 }
@@ -64,6 +91,30 @@ else
     private int _autoRefreshSeconds;
     private System.Threading.Timer? _autoRefreshTimer;
     private string? _lastRefreshedLocalTime;
+    private int _bulkBrightness = 100;
+    private string _bulkColorHex = "#ffffff";
+    private int _bulkColorTemperatureKelvin = 4000;
+    private int _bulkCommandId;
+    private BulkLightCommand? _bulkCommand;
+
+    /// <summary>
+    /// Bulk brightness slider bounds, as the intersection across every bulb that supports
+    /// brightness — the most restrictive lower bound and upper bound of all of them, so any value
+    /// chosen is guaranteed valid for every device it gets applied to.
+    /// </summary>
+    private int BulkBrightnessMin => RangeBound(CapabilityKind.Brightness, c => c.Min ?? 1, bounds => bounds.Max(), fallback: 1);
+    private int BulkBrightnessMax => RangeBound(CapabilityKind.Brightness, c => c.Max ?? 100, bounds => bounds.Min(), fallback: 100);
+    private int BulkColorTemperatureMin => RangeBound(CapabilityKind.ColorTemperature, c => c.Min ?? 2000, bounds => bounds.Max(), fallback: 2000);
+    private int BulkColorTemperatureMax => RangeBound(CapabilityKind.ColorTemperature, c => c.Max ?? 9000, bounds => bounds.Min(), fallback: 9000);
+
+    private int RangeBound(CapabilityKind kind, Func<DeviceCapability, int> selectBound, Func<IEnumerable<int>, int> combine, int fallback)
+    {
+        var bounds = (_devices ?? [])
+            .SelectMany(d => d.Capabilities.Where(c => c.Kind == kind))
+            .Select(selectBound)
+            .ToList();
+        return bounds.Count == 0 ? fallback : combine(bounds);
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -100,6 +151,29 @@ else
         {
             _refreshing = false;
         }
+    }
+
+    /// <summary>
+    /// Broadcasts a bulk command to every <see cref="DeviceCard"/> via its <c>BulkCommand</c>
+    /// parameter; each card applies whichever field is populated if — and only if — it supports
+    /// that capability, skipping it otherwise.
+    /// </summary>
+    private void OnBulkBrightnessChanged(ChangeEventArgs e)
+    {
+        _bulkBrightness = int.Parse((string)e.Value!);
+        _bulkCommand = new BulkLightCommand(++_bulkCommandId, _bulkBrightness, null, null);
+    }
+
+    private void OnBulkColorChanged(ChangeEventArgs e)
+    {
+        _bulkColorHex = (string)e.Value!;
+        _bulkCommand = new BulkLightCommand(++_bulkCommandId, null, RgbColor.FromHex(_bulkColorHex), null);
+    }
+
+    private void OnBulkColorTemperatureChanged(ChangeEventArgs e)
+    {
+        _bulkColorTemperatureKelvin = int.Parse((string)e.Value!);
+        _bulkCommand = new BulkLightCommand(++_bulkCommandId, null, null, _bulkColorTemperatureKelvin);
     }
 
     /// <summary>
