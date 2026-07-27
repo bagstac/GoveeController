@@ -20,6 +20,10 @@ on:
         description: "Verbose logging (use this to diagnose why nothing got deleted)"
         type: boolean
         default: false
+      cut-off-override:
+        description: "Override the cut-off (e.g. '1s') for testing - leave blank for the normal 1d"
+        type: string
+        default: ""
 
 jobs:
   cleanup-old-images:
@@ -46,7 +50,7 @@ jobs:
           token: ${{ secrets.GHCR_CLEANUP_TOKEN }}
           image-names: govee-controller
           image-tags: "!latest"
-          cut-off: 1d
+          cut-off: ${{ github.event.inputs.cut-off-override != '' && github.event.inputs.cut-off-override || '1d' }}
           keep-n-most-recent: 15
           dry-run: ${{ github.event.inputs.dry-run || false }}
           rust-log: ${{ github.event.inputs.debug-logging == 'true' && 'container_retention_policy=debug' || 'container_retention_policy=info' }}
