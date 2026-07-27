@@ -1,0 +1,52 @@
+name: GHCR image cleanup
+
+# Prunes old GHCR package versions for govee-controller. Split out from docker-publish.yml (rather
+# than a job there) so it can be triggered and inspected independently of a full build+push cycle -
+# in particular the workflow_dispatch inputs below give a one-click way to test the cleanup logic
+# itself (with dry-run and verbose logging) without needing to push a throwaway commit first.
+on:
+  workflow_run:
+    workflows: ["Build and publish container image"]
+    types: [completed]
+  schedule:
+    - cron: "17 4 * * *" # daily safety net in case a workflow_run trigger is ever missed
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Log what would be deleted without actually deleting anything"
+        type: boolean
+        default: false
+      debug-logging:
+        description: "Verbose logging (use this to diagnose why nothing got deleted)"
+        type: boolean
+        default: false
+
+jobs:
+  cleanup-old-images:
+    # For the workflow_run trigger, only clean up after a successful build (an in-progress or
+    # failed build's images shouldn't be touched); the other two triggers have no such run to check.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      # Every push creates ~5 package versions (a tagged multi-arch manifest list plus its
+      # untagged per-platform/attestation children), so these accumulate fast. This action
+      # understands manifest-list relationships, so it won't delete an untagged child that a
+      # kept tagged version still points to (unlike naively deleting all untagged versions).
+      #
+      # Requires a classic PAT with read:packages + delete:packages scopes stored as the
+      # GHCR_CLEANUP_TOKEN repo secret - GITHUB_TOKEN cannot delete package versions, GitHub
+      # only exposes that via a PAT. See README's "Continuous deployment" section. If this step
+      # logs "Selected 0 package versions" even though old images clearly exist, the token is
+      # almost always missing the read:packages scope (needed to list versions at all, separately
+      # from delete:packages) - re-run this workflow manually with debug-logging enabled to confirm.
+      - name: Delete old/untagged image versions
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          account: user
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN }}
+          image-names: govee-controller
+          image-tags: "!latest"
+          cut-off: 1d
+          keep-n-most-recent: 15
+          dry-run: ${{ github.event.inputs.dry-run || false }}
+          rust-log: ${{ github.event.inputs.debug-logging == 'true' && 'container_retention_policy=debug' || 'container_retention_policy=info' }}
