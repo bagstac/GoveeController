@@ -206,15 +206,22 @@ tagged `latest` and with the commit SHA. Nothing needs to be built locally to de
 version — just re-pull and restart via the `docker compose ... pull` / `up -d` commands in the
 Raspberry Pi section above (or `docker compose up --build -d` if you built from source).
 
-A third job then prunes old package versions from GHCR (each push creates a tagged multi-arch
-manifest plus several untagged per-platform/attestation children, which pile up fast). It keeps
-the 15 most recent non-`latest` tagged builds and deletes anything else older than a day,
-automatically protecting untagged versions that a kept tagged build still references. This job
-needs a classic PAT with the `read:packages` and `delete:packages` scopes stored as the
-`GHCR_CLEANUP_TOKEN` repository secret — `GITHUB_TOKEN` can push and pull images but [cannot
-delete package versions](https://github.com/snok/container-retention-policy#token); GitHub only
-exposes that via a PAT. Without this secret set, the cleanup job fails on every run (the build and
-publish still succeed regardless — it's an independent job).
+[.github/workflows/ghcr-cleanup.yml](.github/workflows/ghcr-cleanup.yml) then prunes old package
+versions from GHCR — it runs automatically after every successful build, plus once daily as a
+safety net. Each push creates a tagged multi-arch manifest plus several untagged
+per-platform/attestation children, which pile up fast; this keeps the 15 most recent non-`latest`
+tagged builds and deletes anything else older than 2 hours, automatically protecting untagged
+versions that a kept tagged build still references. It also has a `workflow_dispatch` trigger with
+`dry-run` and `debug-logging` inputs, so you can re-run and inspect it on demand from the Actions
+tab instead of only ever seeing it as an unobservable tail of a full build — useful if it ever
+looks like nothing got cleaned up again (worth checking the cut-off first: a burst of pushes
+means most versions are still younger than the cut-off and correctly not yet eligible, not a bug).
+
+The cleanup job needs a classic PAT with the `read:packages` and `delete:packages` scopes stored
+as the `GHCR_CLEANUP_TOKEN` repository secret — `GITHUB_TOKEN` can push and pull images but
+[cannot delete package versions](https://github.com/snok/container-retention-policy#token);
+GitHub only exposes that via a PAT. Without this secret set, the cleanup job fails on every run
+(the build and publish workflow is unaffected — it's a separate workflow).
 
 ## Configuration reference
 

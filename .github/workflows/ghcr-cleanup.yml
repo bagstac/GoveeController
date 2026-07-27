@@ -39,10 +39,13 @@ jobs:
       #
       # Requires a classic PAT with read:packages + delete:packages scopes stored as the
       # GHCR_CLEANUP_TOKEN repo secret - GITHUB_TOKEN cannot delete package versions, GitHub
-      # only exposes that via a PAT. See README's "Continuous deployment" section. If this step
-      # logs "Selected 0 package versions" even though old images clearly exist, the token is
-      # almost always missing the read:packages scope (needed to list versions at all, separately
-      # from delete:packages) - re-run this workflow manually with debug-logging enabled to confirm.
+      # only exposes that via a PAT. See README's "Continuous deployment" section.
+      #
+      # cut-off is intentionally short (2h, not e.g. 1d): during an active push streak every
+      # untagged version is only minutes old, so a day-long cut-off let 47 of them pile up before
+      # a single one qualified for deletion (confirmed via a dry-run with cut-off-override: 1s -
+      # this was never a permissions problem, keep-n-most-recent already protects tagged rollback
+      # history regardless of cut-off, see that parameter's description above).
       - name: Delete old/untagged image versions
         uses: snok/container-retention-policy@v3.1.0
         with:
@@ -50,7 +53,7 @@ jobs:
           token: ${{ secrets.GHCR_CLEANUP_TOKEN }}
           image-names: govee-controller
           image-tags: "!latest"
-          cut-off: ${{ github.event.inputs.cut-off-override != '' && github.event.inputs.cut-off-override || '1d' }}
+          cut-off: ${{ github.event.inputs.cut-off-override != '' && github.event.inputs.cut-off-override || '2h' }}
           keep-n-most-recent: 15
           dry-run: ${{ github.event.inputs.dry-run || false }}
           rust-log: ${{ github.event.inputs.debug-logging == 'true' && 'container_retention_policy=debug' || 'container_retention_policy=info' }}
