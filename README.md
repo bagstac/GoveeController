@@ -4,6 +4,12 @@ A self-hosted web app for controlling Govee smart lights: power, brightness, col
 temperature, Govee's own dynamic scenes, and your own saved "shortcut" presets — all from a
 browser, backed by the [Govee Cloud API](https://developer.govee.com).
 
+> [!WARNING]
+> **Built for local network use only.** This app has no authentication of any kind — anyone who
+> can reach it can control every light on your Govee account. Do not port-forward it or otherwise
+> expose it to the internet unless you put authentication in front of it first (reverse proxy with
+> basic auth, or a VPN like Tailscale/WireGuard). See "Security — read before deploying" below.
+
 ## Architecture
 
 Clean Architecture, four layers plus a test project:
@@ -200,6 +206,16 @@ tagged `latest` and with the commit SHA. Nothing needs to be built locally to de
 version — just re-pull and restart via the `docker compose ... pull` / `up -d` commands in the
 Raspberry Pi section above (or `docker compose up --build -d` if you built from source).
 
+A third job then prunes old package versions from GHCR (each push creates a tagged multi-arch
+manifest plus several untagged per-platform/attestation children, which pile up fast). It keeps
+the 15 most recent non-`latest` tagged builds and deletes anything else older than a day,
+automatically protecting untagged versions that a kept tagged build still references. This job
+needs a classic PAT with the `read:packages` and `delete:packages` scopes stored as the
+`GHCR_CLEANUP_TOKEN` repository secret — `GITHUB_TOKEN` can push and pull images but [cannot
+delete package versions](https://github.com/snok/container-retention-policy#token); GitHub only
+exposes that via a PAT. Without this secret set, the cleanup job fails on every run (the build and
+publish still succeed regardless — it's an independent job).
+
 ## Configuration reference
 
 | Setting | Env var (Docker) | Purpose |
@@ -224,3 +240,7 @@ documents what to put in it.
   for lower latency.
 - **No app-level login.** The app assumes it's deployed on a trusted network or behind a reverse
   proxy that handles access control; it does not authenticate users itself. See "Security" above.
+
+## License
+
+[MIT](LICENSE) — see the LICENSE file for the full text.

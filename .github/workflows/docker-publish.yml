@@ -67,3 +67,25 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  cleanup-old-images:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      # Every push creates ~5 package versions (a tagged multi-arch manifest list plus its
+      # untagged per-platform/attestation children), so these accumulate fast. This action
+      # understands manifest-list relationships, so it won't delete an untagged child that a
+      # kept tagged version still points to (unlike naively deleting all untagged versions).
+      #
+      # Requires a classic PAT with read:packages + delete:packages scopes stored as the
+      # GHCR_CLEANUP_TOKEN repo secret - GITHUB_TOKEN cannot delete package versions, GitHub
+      # only exposes that via a PAT. See README's "Continuous deployment" section.
+      - name: Delete old/untagged image versions
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          account: user
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN }}
+          image-names: govee-controller
+          image-tags: "!latest"
+          cut-off: 1d
+          keep-n-most-recent: 15
