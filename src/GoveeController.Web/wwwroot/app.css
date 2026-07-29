@@ -211,6 +211,14 @@ h1:focus {
     align-items: end;
 }
 
+/* Below phone width, auto-fit's minmax(180px, ...) can still squeeze in two cramped columns -
+   force a single-column list instead, which is easier to use with a thumb than a two-up grid. */
+@media (max-width: 600px) {
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .form-grid label {
     display: block;
     font-size: 0.85rem;
