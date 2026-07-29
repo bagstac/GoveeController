@@ -107,17 +107,8 @@ else
     /// temperature — the most restrictive lower bound and upper bound of all of them, so any value
     /// offered is guaranteed valid for every device it gets applied to.
     /// </summary>
-    private int BulkColorTemperatureMin => RangeBound(CapabilityKind.ColorTemperature, c => c.Min ?? 2000, bounds => bounds.Max(), fallback: 2000);
-    private int BulkColorTemperatureMax => RangeBound(CapabilityKind.ColorTemperature, c => c.Max ?? 9000, bounds => bounds.Min(), fallback: 9000);
-
-    private int RangeBound(CapabilityKind kind, Func<DeviceCapability, int> selectBound, Func<IEnumerable<int>, int> combine, int fallback)
-    {
-        var bounds = (_devices ?? [])
-            .SelectMany(d => d.Capabilities.Where(c => c.Kind == kind))
-            .Select(selectBound)
-            .ToList();
-        return bounds.Count == 0 ? fallback : combine(bounds);
-    }
+    private int BulkColorTemperatureMin => CapabilityRange.Bound(_devices ?? [], CapabilityKind.ColorTemperature, c => c.Min ?? 2000, bounds => bounds.Max(), fallback: 2000);
+    private int BulkColorTemperatureMax => CapabilityRange.Bound(_devices ?? [], CapabilityKind.ColorTemperature, c => c.Max ?? 9000, bounds => bounds.Min(), fallback: 9000);
 
     protected override async Task OnInitializedAsync()
     {

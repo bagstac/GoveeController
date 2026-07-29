@@ -115,10 +115,18 @@ h1:focus {
     padding: 0.3rem;
 }
 
+/* Default: standalone use (e.g. a form-grid cell, label stacked above the input rather than
+   beside it), so no left offset is needed. */
 .control-hint {
-    margin: -0.3rem 0 0.6rem 90px;
+    margin: 0.25rem 0 0.6rem;
     color: #888;
     font-size: 0.8rem;
+}
+
+/* When it follows a .control-row (DeviceCard, Devices bulk controls), indent to line up under
+   the input rather than the row's label, which is 90px wide. */
+.control-row + .control-hint {
+    margin: -0.3rem 0 0.6rem 90px;
 }
 
 .toggle-btn {
