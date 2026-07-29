@@ -69,7 +69,7 @@
             <div class="control-row">
                 <label>Warmth</label>
                 <select value="@currentKelvin.ToString()" disabled="@_busy" @onchange="OnColorTemperatureChangedAsync">
-                    @foreach (var kelvin in WarmthOptions(tempCap, currentKelvin))
+                    @foreach (var kelvin in WarmthOptions.Generate(tempCap.Min ?? 2000, tempCap.Max ?? 9000, currentKelvin))
                     {
                         <option value="@kelvin">@kelvin K</option>
                     }
@@ -249,36 +249,6 @@
     private Task OnColorChangedAsync(ChangeEventArgs e) => SetColorAsync(RgbColor.FromHex((string)e.Value!));
 
     private Task OnColorTemperatureChangedAsync(ChangeEventArgs e) => SetColorTemperatureAsync(int.Parse((string)e.Value!));
-
-    /// <summary>
-    /// Govee reports color temperature as a continuous integer range (e.g. this account's H600A
-    /// bulbs: 2700-6500K, precision 1 - confirmed by querying the live devices API directly, not
-    /// assumed), not a fixed list of presets - offering all ~3800 individual Kelvin values in a
-    /// dropdown would be unusable, so this buckets the device's actual min/max into 100K steps.
-    /// The device's current value is always included even if it falls off that grid (e.g. a Govee
-    /// scene set an odd value), so the dropdown never silently shows the wrong selection.
-    /// </summary>
-    private static IReadOnlyList<int> WarmthOptions(DeviceCapability tempCap, int currentKelvin)
-    {
-        const int step = 100;
-        var min = tempCap.Min ?? 2000;
-        var max = tempCap.Max ?? 9000;
-
-        var values = new List<int>();
-        for (var kelvin = min; kelvin < max; kelvin += step)
-        {
-            values.Add(kelvin);
-        }
-        values.Add(max);
-
-        if (!values.Contains(currentKelvin))
-        {
-            values.Add(currentKelvin);
-            values.Sort();
-        }
-
-        return values;
-    }
 
     // Shared by both the per-control @onchange handlers above and ApplyBulkCommandAsync, so the
     // two paths can't drift apart on what "set brightness/color/color-temperature" actually means.
