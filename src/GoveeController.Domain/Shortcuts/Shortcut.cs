@@ -33,4 +33,19 @@ public sealed class Shortcut
 
     /// <summary>UTC timestamp when the shortcut was created, for display/ordering purposes.</summary>
     public DateTime CreatedAtUtc { get; set; }
+
+    /// <summary>
+    /// Id of the shortcut to run after this one, or null if this shortcut ends its chain. A shortcut
+    /// may be the follower of at most one other shortcut (enforced by a unique index), so chains are
+    /// simple linear paths of at most 3 shortcuts. Deliberately a plain FK with no navigation
+    /// property — the UI resolves names from the already-loaded shortcut list, and the service walks
+    /// chains in memory (see LINKED-SHORTCUTS-PLAN.md §3.4).
+    /// </summary>
+    public int? NextShortcutId { get; set; }
+
+    /// <summary>
+    /// Seconds to wait after applying this shortcut before applying <see cref="NextShortcutId"/>.
+    /// Ignored (and meaningless) when <see cref="NextShortcutId"/> is null. 0 means run immediately.
+    /// </summary>
+    public int NextShortcutDelaySeconds { get; set; }
 }

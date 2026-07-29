@@ -36,7 +36,7 @@ else
                 <div>
                     <strong>@shortcut.Name</strong>
                     <div class="meta">
-                        @DeviceNamesFor(shortcut) &middot; @(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")
+                        @DeviceNamesFor(shortcut) &middot; @(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")@(ChainLabelFor(shortcut) is { } chainLabel ? $" · {chainLabel}" : "")
                     </div>
                 </div>
                 <div>
@@ -102,6 +102,24 @@ else
                     }
                 </select>
             </div>
+            <div>
+                <label>Then run (optional)</label>
+                <select value="@(_form.NextShortcutId?.ToString() ?? "")" @onchange="OnFormNextShortcutChanged">
+                    <option value="">None</option>
+                    @foreach (var candidate in _eligibleNextShortcuts)
+                    {
+                        <option value="@candidate.Id">@candidate.Name</option>
+                    }
+                </select>
+            </div>
+            @if (_form.NextShortcutId is not null)
+            {
+                <div>
+                    <label>Delay before next (seconds)</label>
+                    <InputNumber @bind-Value="_form.NextShortcutDelaySeconds" min="0" max="60" />
+                    <div class="control-hint">Enter a whole number from 0 to 60.</div>
+                </div>
+            }
         </div>
         <p class="meta" style="margin-top:0.4rem;">Set either a color or a color temperature, not both.</p>
         <button class="btn btn-primary" type="submit" disabled="@_busy" style="margin-top:0.5rem;">
@@ -167,6 +185,7 @@ else
 @code {
     private IReadOnlyList<Shortcut>? _shortcuts;
     private IReadOnlyList<Device>? _devices;
+    private IReadOnlyList<Shortcut> _eligibleNextShortcuts = [];
     private readonly ShortcutFormModel _form = new();
     private bool _busy;
     private bool _showDeviceModal;
@@ -196,6 +215,26 @@ else
         {
             _error = UserFacingError.From(ex, Logger, "Loading");
         }
+
+        await RefreshEligibleNextShortcutsAsync();
+    }
+
+    /// <summary>
+    /// Re-fetches which shortcuts are legal choices for the "Then run" dropdown, scoped to
+    /// whichever shortcut the form is currently editing (null while creating a new one). Must be
+    /// re-run after every save/delete and whenever _editingId changes, since linking/unlinking
+    /// changes what's eligible for everyone else.
+    /// </summary>
+    private async Task RefreshEligibleNextShortcutsAsync()
+    {
+        try
+        {
+            _eligibleNextShortcuts = await ShortcutService.ListEligibleNextShortcutsAsync(_editingId, _cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _error = UserFacingError.From(ex, Logger, "Loading eligible shortcuts");
+        }
     }
 
     private async Task ApplyAsync(int id)
@@ -210,9 +249,13 @@ else
         {
             // Applying is best-effort per target (see ShortcutService.ApplyShortcutAsync), so a
             // partial failure still means most/all lights did what was asked — say so precisely
-            // rather than a blanket "failed" that reads as if nothing happened.
-            var failedNames = ex.Failures.Select(f => _devices?.FirstOrDefault(d => d.Id == f.DeviceId)?.Name ?? f.DeviceSku);
-            _error = $"Applied to {ex.SucceededCount} of {ex.TotalCount} device(s). Failed: {string.Join(", ", failedNames)}.";
+            // rather than a blanket "failed" that reads as if nothing happened. Grouped by which
+            // chain step (shortcut) each failure came from, since applying a linked shortcut can
+            // run more than one shortcut and a bare device name no longer says which step it's from.
+            var failuresByShortcut = ex.Failures
+                .GroupBy(f => f.ShortcutName)
+                .Select(g => $"{g.Key}: {string.Join(", ", g.Select(f => _devices?.FirstOrDefault(d => d.Id == f.DeviceId)?.Name ?? f.DeviceSku))}");
+            _error = $"Applied to {ex.SucceededCount} of {ex.TotalCount} device(s). Failed: {string.Join("; ", failuresByShortcut)}.";
         }
         catch (Exception ex)
         {
@@ -235,6 +278,7 @@ else
             {
                 ResetForm();
             }
+            await RefreshEligibleNextShortcutsAsync();
         }
         catch (Exception ex)
         {
@@ -283,6 +327,8 @@ else
                     _form.Brightness,
                     color,
                     _form.ColorTemperatureKelvin,
+                    _form.NextShortcutId,
+                    _form.NextShortcutDelaySeconds,
                     _cts.Token);
             }
             else
@@ -294,11 +340,14 @@ else
                     _form.Brightness,
                     color,
                     _form.ColorTemperatureKelvin,
+                    _form.NextShortcutId,
+                    _form.NextShortcutDelaySeconds,
                     _cts.Token);
             }
 
             _shortcuts = await ShortcutService.ListShortcutsAsync(_cts.Token);
             ResetForm();
+            await RefreshEligibleNextShortcutsAsync();
             _error = null;
         }
         catch (Exception ex)
@@ -311,7 +360,7 @@ else
         }
     }
 
-    private void StartEdit(Shortcut shortcut)
+    private async Task StartEdit(Shortcut shortcut)
     {
         _editingId = shortcut.Id;
         _form.Name = shortcut.Name;
@@ -324,13 +373,19 @@ else
         _form.Brightness = shortcut.Brightness;
         _form.ColorHex = shortcut.ColorRgbPacked is { } packed ? RgbColor.FromPackedInt(packed).ToHex() : string.Empty;
         _form.ColorTemperatureKelvin = shortcut.ColorTemperatureKelvin;
+        _form.NextShortcutId = shortcut.NextShortcutId;
+        _form.NextShortcutDelaySeconds = shortcut.NextShortcutDelaySeconds;
         _error = null;
+        // Eligibility depends on which shortcut is being edited (a shortcut may legally "keep" its
+        // own current link even though nothing else may take it), so this must be re-scoped here.
+        await RefreshEligibleNextShortcutsAsync();
     }
 
-    private void CancelEdit()
+    private async Task CancelEdit()
     {
         ResetForm();
         _error = null;
+        await RefreshEligibleNextShortcutsAsync();
     }
 
     private void ResetForm()
@@ -342,12 +397,26 @@ else
         _form.Brightness = null;
         _form.ColorHex = string.Empty;
         _form.ColorTemperatureKelvin = null;
+        _form.NextShortcutId = null;
+        _form.NextShortcutDelaySeconds = 0;
     }
 
     private void OnFormColorTemperatureChanged(ChangeEventArgs e)
     {
         var value = (string?)e.Value;
         _form.ColorTemperatureKelvin = string.IsNullOrEmpty(value) ? null : int.Parse(value);
+    }
+
+    private void OnFormNextShortcutChanged(ChangeEventArgs e)
+    {
+        var value = (string?)e.Value;
+        _form.NextShortcutId = string.IsNullOrEmpty(value) ? null : int.Parse(value);
+        if (_form.NextShortcutId is null)
+        {
+            // Matches ShortcutService's own normalization (a stale delay must not reappear if this
+            // shortcut is relinked later) - kept here too so the form reflects it immediately.
+            _form.NextShortcutDelaySeconds = 0;
+        }
     }
 
     private void ToggleDevice(string deviceId, bool isSelected)
@@ -386,6 +455,23 @@ else
         return string.Join(", ", names);
     }
 
+    /// <summary>
+    /// "→ then {name} (after Ns)" row metadata for a shortcut that has a chain link, or null for
+    /// one that doesn't. Resolves the linked shortcut's name from the already-loaded list rather
+    /// than a fresh call, same approach as <see cref="DeviceNamesFor"/>.
+    /// </summary>
+    private string? ChainLabelFor(Shortcut shortcut)
+    {
+        if (shortcut.NextShortcutId is not { } nextId)
+        {
+            return null;
+        }
+
+        var nextName = _shortcuts?.FirstOrDefault(s => s.Id == nextId)?.Name ?? $"#{nextId}";
+        var delaySuffix = shortcut.NextShortcutDelaySeconds > 0 ? $" (after {shortcut.NextShortcutDelaySeconds}s)" : "";
+        return $"→ then {nextName}{delaySuffix}";
+    }
+
     /// <summary>Backing model for the "new shortcut" form; kept simple/flat for Blazor's EditForm binding.</summary>
     private sealed class ShortcutFormModel
     {
@@ -395,6 +481,8 @@ else
         public int? Brightness { get; set; }
         public string ColorHex { get; set; } = string.Empty;
         public int? ColorTemperatureKelvin { get; set; }
+        public int? NextShortcutId { get; set; }
+        public int NextShortcutDelaySeconds { get; set; }
     }
 
     /// <inheritdoc />
