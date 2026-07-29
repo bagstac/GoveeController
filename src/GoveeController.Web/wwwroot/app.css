@@ -105,9 +105,20 @@ h1:focus {
     flex: 1;
 }
 
+.control-row input[type="number"] {
+    width: 70px;
+    padding: 0.3rem;
+}
+
 .control-row select {
     flex: 1;
     padding: 0.3rem;
+}
+
+.control-hint {
+    margin: -0.3rem 0 0.6rem 90px;
+    color: #888;
+    font-size: 0.8rem;
 }
 
 .toggle-btn {

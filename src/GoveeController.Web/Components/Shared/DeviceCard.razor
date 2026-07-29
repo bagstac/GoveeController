@@ -41,14 +41,15 @@
             var brightnessCap = Device.Capabilities.First(c => c.Kind == CapabilityKind.Brightness);
             <div class="control-row">
                 <label>Brightness</label>
-                <input type="range"
-                       min="@(brightnessCap.Min ?? 1)"
-                       max="@(brightnessCap.Max ?? 100)"
+                <input type="number"
+                       min="0"
+                       max="100"
                        value="@(_state.Brightness ?? brightnessCap.Min ?? 1)"
                        disabled="@_busy"
                        @onchange="OnBrightnessChangedAsync" />
-                <span>@(_state.Brightness ?? 0)%</span>
+                <span>%</span>
             </div>
+            <div class="control-hint">Enter a whole number from 0 to 100.</div>
         }
 
         @if (Device.SupportsColorRgb)
@@ -62,16 +63,17 @@
         @if (Device.SupportsColorTemperature)
         {
             var tempCap = Device.Capabilities.First(c => c.Kind == CapabilityKind.ColorTemperature);
+            // Govee reports 0K (not null) when the bulb is currently in RGB mode rather than
+            // color-temperature mode - treat that as "unknown" rather than a real, selectable value.
+            var currentKelvin = _state.ColorTemperatureKelvin is > 0 ? _state.ColorTemperatureKelvin.Value : tempCap.Min ?? 2000;
             <div class="control-row">
-                <label>Warmth (K)</label>
-                <input type="range"
-                       min="@(tempCap.Min ?? 2000)"
-                       max="@(tempCap.Max ?? 9000)"
-                       step="100"
-                       value="@(_state.ColorTemperatureKelvin ?? tempCap.Min ?? 2000)"
-                       disabled="@_busy"
-                       @onchange="OnColorTemperatureChangedAsync" />
-                <span>@(_state.ColorTemperatureKelvin ?? 0)K</span>
+                <label>Warmth</label>
+                <select value="@currentKelvin.ToString()" disabled="@_busy" @onchange="OnColorTemperatureChangedAsync">
+                    @foreach (var kelvin in WarmthOptions(tempCap, currentKelvin))
+                    {
+                        <option value="@kelvin">@kelvin K</option>
+                    }
+                </select>
             </div>
         }
 
@@ -233,11 +235,50 @@
             s => s with { PowerOn = turningOn });
     }
 
-    private Task OnBrightnessChangedAsync(ChangeEventArgs e) => SetBrightnessAsync(int.Parse((string)e.Value!));
+    private Task OnBrightnessChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse((string?)e.Value, out var brightness) || brightness is < 0 or > 100)
+        {
+            _error = "Brightness must be a whole number from 0 to 100.";
+            return Task.CompletedTask;
+        }
+
+        return SetBrightnessAsync(brightness);
+    }
 
     private Task OnColorChangedAsync(ChangeEventArgs e) => SetColorAsync(RgbColor.FromHex((string)e.Value!));
 
     private Task OnColorTemperatureChangedAsync(ChangeEventArgs e) => SetColorTemperatureAsync(int.Parse((string)e.Value!));
+
+    /// <summary>
+    /// Govee reports color temperature as a continuous integer range (e.g. this account's H600A
+    /// bulbs: 2700-6500K, precision 1 - confirmed by querying the live devices API directly, not
+    /// assumed), not a fixed list of presets - offering all ~3800 individual Kelvin values in a
+    /// dropdown would be unusable, so this buckets the device's actual min/max into 100K steps.
+    /// The device's current value is always included even if it falls off that grid (e.g. a Govee
+    /// scene set an odd value), so the dropdown never silently shows the wrong selection.
+    /// </summary>
+    private static IReadOnlyList<int> WarmthOptions(DeviceCapability tempCap, int currentKelvin)
+    {
+        const int step = 100;
+        var min = tempCap.Min ?? 2000;
+        var max = tempCap.Max ?? 9000;
+
+        var values = new List<int>();
+        for (var kelvin = min; kelvin < max; kelvin += step)
+        {
+            values.Add(kelvin);
+        }
+        values.Add(max);
+
+        if (!values.Contains(currentKelvin))
+        {
+            values.Add(currentKelvin);
+            values.Sort();
+        }
+
+        return values;
+    }
 
     // Shared by both the per-control @onchange handlers above and ApplyBulkCommandAsync, so the
     // two paths can't drift apart on what "set brightness/color/color-temperature" actually means.
