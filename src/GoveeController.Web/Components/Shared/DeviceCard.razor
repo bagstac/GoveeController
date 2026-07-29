@@ -41,14 +41,15 @@
             var brightnessCap = Device.Capabilities.First(c => c.Kind == CapabilityKind.Brightness);
             <div class="control-row">
                 <label>Brightness</label>
-                <input type="range"
-                       min="@(brightnessCap.Min ?? 1)"
-                       max="@(brightnessCap.Max ?? 100)"
+                <input type="number"
+                       min="0"
+                       max="100"
                        value="@(_state.Brightness ?? brightnessCap.Min ?? 1)"
                        disabled="@_busy"
                        @onchange="OnBrightnessChangedAsync" />
-                <span>@(_state.Brightness ?? 0)%</span>
+                <span>%</span>
             </div>
+            <div class="control-hint">Enter a whole number from 0 to 100.</div>
         }
 
         @if (Device.SupportsColorRgb)
@@ -62,16 +63,17 @@
         @if (Device.SupportsColorTemperature)
         {
             var tempCap = Device.Capabilities.First(c => c.Kind == CapabilityKind.ColorTemperature);
+            // Govee reports 0K (not null) when the bulb is currently in RGB mode rather than
+            // color-temperature mode - treat that as "unknown" rather than a real, selectable value.
+            var currentKelvin = _state.ColorTemperatureKelvin is > 0 ? _state.ColorTemperatureKelvin.Value : tempCap.Min ?? 2000;
             <div class="control-row">
-                <label>Warmth (K)</label>
-                <input type="range"
-                       min="@(tempCap.Min ?? 2000)"
-                       max="@(tempCap.Max ?? 9000)"
-                       step="100"
-                       value="@(_state.ColorTemperatureKelvin ?? tempCap.Min ?? 2000)"
-                       disabled="@_busy"
-                       @onchange="OnColorTemperatureChangedAsync" />
-                <span>@(_state.ColorTemperatureKelvin ?? 0)K</span>
+                <label>Warmth</label>
+                <select value="@currentKelvin.ToString()" disabled="@_busy" @onchange="OnColorTemperatureChangedAsync">
+                    @foreach (var kelvin in WarmthOptions.Generate(tempCap.Min ?? 2000, tempCap.Max ?? 9000, currentKelvin))
+                    {
+                        <option value="@kelvin">@kelvin K</option>
+                    }
+                </select>
             </div>
         }
 
@@ -233,7 +235,16 @@
             s => s with { PowerOn = turningOn });
     }
 
-    private Task OnBrightnessChangedAsync(ChangeEventArgs e) => SetBrightnessAsync(int.Parse((string)e.Value!));
+    private Task OnBrightnessChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse((string?)e.Value, out var brightness) || brightness is < 0 or > 100)
+        {
+            _error = "Brightness must be a whole number from 0 to 100.";
+            return Task.CompletedTask;
+        }
+
+        return SetBrightnessAsync(brightness);
+    }
 
     private Task OnColorChangedAsync(ChangeEventArgs e) => SetColorAsync(RgbColor.FromHex((string)e.Value!));
 

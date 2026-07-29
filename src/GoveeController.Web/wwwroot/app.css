@@ -105,9 +105,28 @@ h1:focus {
     flex: 1;
 }
 
+.control-row input[type="number"] {
+    width: 70px;
+    padding: 0.3rem;
+}
+
 .control-row select {
     flex: 1;
     padding: 0.3rem;
+}
+
+/* Default: standalone use (e.g. a form-grid cell, label stacked above the input rather than
+   beside it), so no left offset is needed. */
+.control-hint {
+    margin: 0.25rem 0 0.6rem;
+    color: #888;
+    font-size: 0.8rem;
+}
+
+/* When it follows a .control-row (DeviceCard, Devices bulk controls), indent to line up under
+   the input rather than the row's label, which is 90px wide. */
+.control-row + .control-hint {
+    margin: -0.3rem 0 0.6rem 90px;
 }
 
 .toggle-btn {
@@ -190,6 +209,14 @@ h1:focus {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 0.75rem;
     align-items: end;
+}
+
+/* Below phone width, auto-fit's minmax(180px, ...) can still squeeze in two cramped columns -
+   force a single-column list instead, which is easier to use with a thumb than a two-up grid. */
+@media (max-width: 600px) {
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .form-grid label {

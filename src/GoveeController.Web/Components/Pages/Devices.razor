@@ -53,26 +53,26 @@ else
         <h3>Set All Bulbs</h3>
         <div class="control-row">
             <label>Brightness</label>
-            <input type="range"
-                   min="@BulkBrightnessMin"
-                   max="@BulkBrightnessMax"
+            <input type="number"
+                   min="0"
+                   max="100"
                    value="@_bulkBrightness"
                    @onchange="OnBulkBrightnessChanged" />
-            <span>@_bulkBrightness%</span>
+            <span>%</span>
         </div>
+        <div class="control-hint">Enter a whole number from 0 to 100.</div>
         <div class="control-row">
             <label>Color</label>
             <input type="color" value="@_bulkColorHex" @onchange="OnBulkColorChanged" />
         </div>
         <div class="control-row">
-            <label>Warmth (K)</label>
-            <input type="range"
-                   min="@BulkColorTemperatureMin"
-                   max="@BulkColorTemperatureMax"
-                   step="100"
-                   value="@_bulkColorTemperatureKelvin"
-                   @onchange="OnBulkColorTemperatureChanged" />
-            <span>@_bulkColorTemperatureKelvin K</span>
+            <label>Warmth</label>
+            <select value="@_bulkColorTemperatureKelvin.ToString()" @onchange="OnBulkColorTemperatureChanged">
+                @foreach (var kelvin in WarmthOptions.Generate(BulkColorTemperatureMin, BulkColorTemperatureMax, _bulkColorTemperatureKelvin))
+                {
+                    <option value="@kelvin">@kelvin K</option>
+                }
+            </select>
         </div>
     </div>
 
@@ -103,23 +103,12 @@ else
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>
-    /// Bulk brightness slider bounds, as the intersection across every bulb that supports
-    /// brightness — the most restrictive lower bound and upper bound of all of them, so any value
-    /// chosen is guaranteed valid for every device it gets applied to.
+    /// Bulk warmth dropdown bounds, as the intersection across every bulb that supports color
+    /// temperature — the most restrictive lower bound and upper bound of all of them, so any value
+    /// offered is guaranteed valid for every device it gets applied to.
     /// </summary>
-    private int BulkBrightnessMin => RangeBound(CapabilityKind.Brightness, c => c.Min ?? 1, bounds => bounds.Max(), fallback: 1);
-    private int BulkBrightnessMax => RangeBound(CapabilityKind.Brightness, c => c.Max ?? 100, bounds => bounds.Min(), fallback: 100);
-    private int BulkColorTemperatureMin => RangeBound(CapabilityKind.ColorTemperature, c => c.Min ?? 2000, bounds => bounds.Max(), fallback: 2000);
-    private int BulkColorTemperatureMax => RangeBound(CapabilityKind.ColorTemperature, c => c.Max ?? 9000, bounds => bounds.Min(), fallback: 9000);
-
-    private int RangeBound(CapabilityKind kind, Func<DeviceCapability, int> selectBound, Func<IEnumerable<int>, int> combine, int fallback)
-    {
-        var bounds = (_devices ?? [])
-            .SelectMany(d => d.Capabilities.Where(c => c.Kind == kind))
-            .Select(selectBound)
-            .ToList();
-        return bounds.Count == 0 ? fallback : combine(bounds);
-    }
+    private int BulkColorTemperatureMin => CapabilityRange.Bound(_devices ?? [], CapabilityKind.ColorTemperature, c => c.Min ?? 2000, bounds => bounds.Max(), fallback: 2000);
+    private int BulkColorTemperatureMax => CapabilityRange.Bound(_devices ?? [], CapabilityKind.ColorTemperature, c => c.Max ?? 9000, bounds => bounds.Min(), fallback: 9000);
 
     protected override async Task OnInitializedAsync()
     {
@@ -165,7 +154,14 @@ else
     /// </summary>
     private void OnBulkBrightnessChanged(ChangeEventArgs e)
     {
-        _bulkBrightness = int.Parse((string)e.Value!);
+        if (!int.TryParse((string?)e.Value, out var brightness) || brightness is < 0 or > 100)
+        {
+            _error = "Brightness must be a whole number from 0 to 100.";
+            return;
+        }
+
+        _bulkBrightness = brightness;
+        _error = null;
         _bulkCommand = new BulkLightCommand(++_bulkCommandId, _bulkBrightness, null, null);
     }
 
