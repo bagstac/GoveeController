@@ -12,7 +12,13 @@ public interface IShortcutRepository
     /// <summary>Returns all saved shortcuts, ordered by creation date (newest first).</summary>
     Task<IReadOnlyList<Shortcut>> GetAllAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>Returns one shortcut by id, or null if it does not exist.</summary>
+    /// <summary>
+    /// Returns one shortcut by id, or null if it does not exist. No production code calls this as
+    /// of the linked-shortcuts feature - <see cref="ShortcutService.ApplyShortcutAsync"/> (its last
+    /// caller) now loads the full set via <see cref="GetAllAsync"/> to resolve chains in memory
+    /// (see LINKED-SHORTCUTS-PLAN.md §3.4). Kept on the interface because it's still useful for
+    /// tests to look up a single row by id without re-deriving it from a full-list query.
+    /// </summary>
     Task<Shortcut?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>Persists a new shortcut and returns it with its generated <see cref="Shortcut.Id"/> populated.</summary>

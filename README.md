@@ -1,8 +1,9 @@
 # Govee Controller
 
 A self-hosted web app for controlling Govee smart lights: power, brightness, color, color
-temperature, Govee's own dynamic scenes, and your own saved "shortcut" presets — all from a
-browser, backed by the [Govee Cloud API](https://developer.govee.com).
+temperature, Govee's own dynamic scenes, and your own saved "shortcut" presets — which can be
+chained so that applying one runs a short sequence — all from a browser, backed by the
+[Govee Cloud API](https://developer.govee.com).
 
 > [!WARNING]
 > **Built for local network use only.** This app has no authentication of any kind — anyone who
@@ -22,7 +23,8 @@ GoveeController.sln (slnx)
 │   ├── GoveeController.Infrastructure  # Govee HTTP client, EF Core/SQLite persistence, DI wiring.
 │   └── GoveeController.Web             # Blazor Server UI (the composition root).
 └── tests/
-    └── GoveeController.Application.Tests  # Unit tests: mocked services + a fake-HTTP Govee client test.
+    └── GoveeController.Application.Tests  # Mocked services, a fake-HTTP Govee client test, and
+                                           # repository tests against real in-memory SQLite.
 ```
 
 Dependency direction is strictly `Web → Application → Domain`, with `Infrastructure` implementing
@@ -33,14 +35,17 @@ what makes them unit-testable without a network connection or a database.
 **Domain** (`src/GoveeController.Domain`)
 - `Device`, `DeviceCapability`, `LightState`, `RgbColor`, `GoveeScene` — device data as reported
   by Govee, normalized into a shape this app understands.
-- `Shortcut` — a user-defined preset (power/brightness/color for one device), the only thing this
-  app persists itself.
+- `Shortcut` — a user-defined preset (power/brightness/color applied to one or more devices), the
+  only thing this app persists itself. Optionally names another shortcut to run after it — see
+  "Linked shortcuts" below.
+- `ShortcutTarget` — one device a shortcut applies to; a shortcut has at least one.
 
 **Application** (`src/GoveeController.Application`)
 - `IGoveeApiClient` / `IShortcutRepository` — interfaces Infrastructure implements.
 - `IDeviceControlService` / `DeviceControlService` — device listing and control, with a short
   (~12s) in-memory cache on reads to stay well under Govee's 30 requests/minute rate limit.
-- `IShortcutService` / `ShortcutService` — CRUD for shortcuts and applying one to its device.
+- `IShortcutService` / `ShortcutService` — CRUD for shortcuts, the chain-linking rules, and applying
+  a shortcut to all of its devices before continuing down its chain.
 
 **Infrastructure** (`src/GoveeController.Infrastructure`)
 - `GoveeApiClient` — talks to `https://openapi.api.govee.com`. Retry/backoff for HTTP 429/5xx is
@@ -51,12 +56,51 @@ what makes them unit-testable without a network connection or a database.
   from `Web/Program.cs`.
 
 **Web** (`src/GoveeController.Web`, Blazor Server)
-- `Components/Pages/Devices.razor` (`/`) — one `<DeviceCard>` per device: power toggle, brightness
-  slider, color/color-temperature pickers, and a dropdown of that device's Govee scenes.
-- `Components/Pages/Shortcuts.razor` (`/shortcuts`) — list, apply, delete, and create shortcuts.
+- `Components/Pages/Devices.razor` (`/`) — one `<DeviceCard>` per device: power toggle, a brightness
+  number input (0-100), a color picker, a warmth dropdown of the Kelvin values that device actually
+  supports, and a dropdown of that device's Govee scenes. Also has "Set All Bulbs" controls that
+  broadcast the same brightness/color/warmth to every bulb at once.
+- `Components/Pages/Shortcuts.razor` (`/shortcuts`) — list, apply, create, edit, delete, and link
+  shortcuts.
 - `Components/Shared/DeviceCard.razor` — the reusable per-device control panel.
 - `Program.cs` — the composition root; also runs pending EF Core migrations on startup so the
   SQLite schema self-initializes on first run.
+
+## Linked shortcuts
+
+A shortcut can name another shortcut to run after it, so applying one runs a short sequence. Set the
+link with the **"Then run"** dropdown on the Shortcuts page — either while creating a shortcut, or by
+editing one that already exists (that's also how you link two shortcuts you made separately, and how
+you unlink: set it back to "None").
+
+The rules, all enforced server-side:
+
+- **Chains are capped at 3 shortcuts.** Anything that would make a fourth is rejected.
+- **A shortcut can only follow one other shortcut.** If B already runs after A, C can't also claim B —
+  you'll get "That shortcut already runs after another shortcut." This is the constraint most likely
+  to surprise you; it's what keeps chains simple lines rather than a branching graph.
+- **Loops are rejected**, as is linking a shortcut to itself.
+- **Each link has its own delay** (0–60 seconds) that runs before the next shortcut starts. See the
+  rate-limit note below for why this is more than cosmetic.
+- **Applying runs from that shortcut to the end of its chain.** Given `A → B → C`, applying `B` runs
+  B then C. Every shortcut keeps its own row and stays independently applyable; the row just shows
+  where it leads (`→ then Movie Mode (after 10s)`).
+- **Deleting a shortcut that something else runs** clears the link on its predecessor rather than
+  deleting or breaking it.
+
+Chains run inline — the Apply button stays busy until the whole chain finishes, which is why the
+per-link delay is capped at 60 seconds.
+
+### Chains and the Govee rate limit
+
+Govee allows about **30 requests/minute**. Applying one shortcut costs roughly 3 calls per target
+device (power, then brightness, then color/warmth), so a 3-step chain across 6 bulbs is on the order
+of 50+ calls — more than can complete in a single minute no matter what the app does.
+
+The per-link delay is the lever that makes large chains work: spacing steps apart puts each step's
+burst of calls into a different rate-limit window. For chains covering many bulbs, prefer longer
+delays. If you do hit the limit, the app surfaces a "Govee rate limit reached" message and — because
+applying is best-effort — later steps still run, so you may end up with a partially applied chain.
 
 ## Security — read before deploying
 
@@ -192,9 +236,20 @@ database file is created next to the running executable on first launch.
 dotnet test
 ```
 
-Covers `DeviceControlService`'s caching/invalidation behavior, `ShortcutService`'s validation and
-apply logic (all mocked, no network/DB), and `GoveeApiClient`'s request/response mapping against a
-fake `HttpMessageHandler` (verifies headers, request bodies, and error propagation).
+Covers:
+
+- `DeviceControlService`'s caching/invalidation behavior and `ShortcutService`'s validation, apply,
+  and chain-linking logic (mocked repository and device-control service — no network).
+- Chain behavior specifically: every validation rule at its boundary (self-link, already-followed,
+  loops, the 3-shortcut cap, delay bounds), step ordering, that the delay runs between steps but not
+  after the last one (via `FakeTimeProvider`, so no real waiting), cancellation mid-chain, and
+  failure attribution back to the step it came from.
+- `ShortcutRepository` against a **real in-memory SQLite database**, not mocks — this is what
+  actually verifies the EF Core behavior that's easy to get wrong: cascade-delete of a shortcut's
+  targets, `SetNull` clearing a predecessor's link when its follower is deleted, and the unique
+  index that stops two shortcuts pointing at the same follower.
+- `GoveeApiClient`'s request/response mapping against a fake `HttpMessageHandler` (verifies headers,
+  request bodies, and error propagation).
 
 ## Continuous deployment
 
