@@ -28,6 +28,21 @@ public sealed class AppDbContext : DbContext
                 .WithOne()
                 .HasForeignKey(t => t.ShortcutId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Self-referencing optional link to the next shortcut in a chain. SetNull (not Cascade)
+            // so that deleting a followed shortcut just breaks the link instead of deleting its
+            // predecessor too.
+            entity.HasOne<Shortcut>()
+                .WithMany()
+                .HasForeignKey(s => s.NextShortcutId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // At most one shortcut may point at any given follower — this is what keeps chains
+            // linear and makes the 3-shortcut cap unambiguous. SQLite treats NULLs as distinct, so
+            // unlinked shortcuts are unaffected.
+            entity.HasIndex(s => s.NextShortcutId).IsUnique();
+
+            entity.Property(s => s.NextShortcutDelaySeconds).HasDefaultValue(0);
         });
 
         modelBuilder.Entity<ShortcutTarget>(entity =>

@@ -75,6 +75,9 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IShortcutRepository, ShortcutRepository>();
         services.AddScoped<IDeviceControlService, DeviceControlService>();
+        // Real wall-clock delays in production; ShortcutService's chain-linking tests substitute
+        // FakeTimeProvider so delay-honoring tests run instantly instead of actually sleeping.
+        services.AddSingleton(TimeProvider.System);
         services.AddScoped<IShortcutService, ShortcutService>();
 
         return services;

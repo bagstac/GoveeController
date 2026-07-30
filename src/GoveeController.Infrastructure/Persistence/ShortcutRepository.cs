@@ -50,6 +50,8 @@ public sealed class ShortcutRepository : IShortcutRepository
         existing.Brightness = shortcut.Brightness;
         existing.ColorRgbPacked = shortcut.ColorRgbPacked;
         existing.ColorTemperatureKelvin = shortcut.ColorTemperatureKelvin;
+        existing.NextShortcutId = shortcut.NextShortcutId;
+        existing.NextShortcutDelaySeconds = shortcut.NextShortcutDelaySeconds;
 
         // ShortcutTarget.ShortcutId is a required (non-nullable) FK, so EF Core's default cascade
         // behavior deletes entities removed from this collection rather than orphaning them —

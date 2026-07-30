@@ -135,4 +135,78 @@ public sealed class ShortcutRepositoryTests : IDisposable
 
         Assert.Equal(["Newer", "Older"], all.Select(s => s.Name));
     }
+
+    [Fact]
+    public async Task UpdateAsync_RoundTripsNextShortcutFields()
+    {
+        var target = await _repository.AddAsync(new Shortcut { Name = "Target", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var source = await _repository.AddAsync(new Shortcut { Name = "Source", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+
+        var updated = new Shortcut
+        {
+            Id = source.Id,
+            Name = "Source",
+            PowerOn = true,
+            NextShortcutId = target.Id,
+            NextShortcutDelaySeconds = 15
+        };
+        await _repository.UpdateAsync(updated);
+
+        var loaded = await _repository.GetByIdAsync(source.Id);
+        Assert.NotNull(loaded);
+        Assert.Equal(target.Id, loaded!.NextShortcutId);
+        Assert.Equal(15, loaded.NextShortcutDelaySeconds);
+    }
+
+    [Fact]
+    public async Task DeletingAFollowedShortcut_ClearsThePredecessorsLink_InsteadOfDeletingOrThrowing()
+    {
+        // ExecuteDeleteAsync (used by ShortcutRepository.DeleteAsync) issues a raw SQL DELETE that
+        // bypasses EF's change tracker entirely, so the SetNull behavior configured in AppDbContext
+        // only actually fires if SQLite's own foreign-key enforcement is on for this connection.
+        // No explicit PRAGMA is needed here - verified separately that Microsoft.Data.Sqlite enables
+        // foreign_keys by default on every connection it opens, including this one.
+        var follower = await _repository.AddAsync(new Shortcut { Name = "Follower", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var predecessor = await _repository.AddAsync(new Shortcut
+        {
+            Name = "Predecessor",
+            PowerOn = true,
+            CreatedAtUtc = DateTime.UtcNow,
+            NextShortcutId = follower.Id,
+            NextShortcutDelaySeconds = 5
+        });
+
+        await _repository.DeleteAsync(follower.Id);
+
+        Assert.Null(await _repository.GetByIdAsync(follower.Id));
+        var reloadedPredecessor = await _repository.GetByIdAsync(predecessor.Id);
+        Assert.NotNull(reloadedPredecessor);
+        Assert.Null(reloadedPredecessor!.NextShortcutId);
+    }
+
+    [Fact]
+    public async Task UniqueIndex_RejectsASecondShortcutPointingAtTheSameFollower()
+    {
+        var follower = await _repository.AddAsync(new Shortcut { Name = "Follower", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        await _repository.AddAsync(new Shortcut
+        {
+            Name = "First predecessor",
+            PowerOn = true,
+            CreatedAtUtc = DateTime.UtcNow,
+            NextShortcutId = follower.Id
+        });
+
+        var secondPredecessor = new Shortcut
+        {
+            Name = "Second predecessor",
+            PowerOn = true,
+            CreatedAtUtc = DateTime.UtcNow,
+            NextShortcutId = follower.Id
+        };
+
+        // This is the database-level backstop for the rule ShortcutService.ValidateChainLink
+        // already enforces at the application level - both must independently hold, since the
+        // service is not the only possible writer of this table over the app's lifetime.
+        await Assert.ThrowsAsync<DbUpdateException>(() => _repository.AddAsync(secondPredecessor));
+    }
 }
