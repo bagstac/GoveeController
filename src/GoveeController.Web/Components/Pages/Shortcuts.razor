@@ -33,19 +33,37 @@ else
         @foreach (var shortcut in _shortcuts)
         {
             <div class="shortcut-row">
-                <div>
+                <button type="button" class="shortcut-toggle"
+                        aria-expanded="@(IsExpanded(shortcut.Id) ? "true" : "false")"
+                        @onclick="() => ToggleExpanded(shortcut.Id)">
+                    <span class="shortcut-caret" aria-hidden="true">@(IsExpanded(shortcut.Id) ? "▾" : "▸")</span>
                     <strong>@shortcut.Name</strong>
-                    <div class="meta">
-                        @DeviceNamesFor(shortcut) &middot; @(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")@(ChainLabelFor(shortcut) is { } chainLabel ? $" · {chainLabel}" : "")
-                    </div>
-                </div>
-                <div>
+                </button>
+
+                <div class="shortcut-actions">
                     <button class="btn btn-primary" disabled="@_busy" @onclick="() => ApplyAsync(shortcut.Id)">
                         @(_applyingId == shortcut.Id ? "Applying…" : "Apply")
                     </button>
                     <button class="btn" disabled="@_busy" @onclick="() => StartEdit(shortcut)">Edit</button>
                     <button class="btn btn-danger" disabled="@_busy" @onclick="() => DeleteAsync(shortcut.Id)">Delete</button>
                 </div>
+
+                @if (IsExpanded(shortcut.Id))
+                {
+                    <div class="shortcut-details">
+                        <ul>
+                            @foreach (var name in DeviceNamesListFor(shortcut))
+                            {
+                                <li>@name</li>
+                            }
+                        </ul>
+                        <div>@(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")</div>
+                        @if (ChainLabelFor(shortcut) is { } chainLabel)
+                        {
+                            <div>@chainLabel</div>
+                        }
+                    </div>
+                }
             </div>
         }
     </div>
@@ -199,6 +217,10 @@ else
     // shortcut can now take up to ~2 minutes to apply (see ShortcutService.ApplyShortcutAsync), so
     // showing "Applying…" for every row whenever anything on the page is busy would be misleading.
     private int? _applyingId;
+
+    // Which rows are expanded. A set (not a single int) because rows expand independently - opening
+    // one must not collapse another. Transient view state: deliberately not persisted.
+    private readonly HashSet<int> _expandedShortcutIds = [];
 
     // Cancelled on dispose so an in-flight Govee/EF call doesn't run to completion and then touch
     // a disposed component (e.g. the user navigating away mid-request).
@@ -452,23 +474,33 @@ else
         };
     }
 
-    private string DeviceNamesFor(Shortcut shortcut)
+    private bool IsExpanded(int shortcutId) => _expandedShortcutIds.Contains(shortcutId);
+
+    private void ToggleExpanded(int shortcutId)
+    {
+        if (!_expandedShortcutIds.Add(shortcutId))
+        {
+            _expandedShortcutIds.Remove(shortcutId);
+        }
+    }
+
+    /// <summary>Target device names for the expanded panel's list, one entry per device.</summary>
+    private IReadOnlyList<string> DeviceNamesListFor(Shortcut shortcut)
     {
         if (_devices is null)
         {
-            return $"{shortcut.Targets.Count} device(s)";
+            return [$"{shortcut.Targets.Count} device(s)"];
         }
 
-        var names = shortcut.Targets
+        return shortcut.Targets
             .Select(t => _devices.FirstOrDefault(d => d.Id == t.DeviceId)?.Name ?? t.DeviceSku)
             .ToList();
-        return string.Join(", ", names);
     }
 
     /// <summary>
     /// "→ then {name} (after Ns)" row metadata for a shortcut that has a chain link, or null for
     /// one that doesn't. Resolves the linked shortcut's name from the already-loaded list rather
-    /// than a fresh call, same approach as <see cref="DeviceNamesFor"/>.
+    /// than a fresh call, same approach as <see cref="DeviceNamesListFor"/>.
     /// </summary>
     private string? ChainLabelFor(Shortcut shortcut)
     {
