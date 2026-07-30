@@ -19,10 +19,10 @@ public sealed record ShortcutTargetFailure(
     string ShortcutName);
 
 /// <summary>
-/// Thrown when applying a shortcut (or the chain it starts) fails on one or more (but not
-/// necessarily all) of the targets across every step. <see cref="SucceededCount"/> is always
-/// &gt; 0 when this is thrown — a run whose every target failed would report the same way, but
-/// callers can tell the two apart by comparing <see cref="SucceededCount"/> to <see cref="TotalCount"/>.
+/// Thrown when applying a shortcut (or the chain it starts) fails on one or more of the targets
+/// across every step. <see cref="SucceededCount"/> can be <c>0</c> - a run where every single
+/// target failed throws the same way as one with a partial failure. Compare
+/// <see cref="SucceededCount"/> to <see cref="TotalCount"/> to tell total failure from partial.
 /// </summary>
 public sealed class ShortcutApplyException : Exception
 {

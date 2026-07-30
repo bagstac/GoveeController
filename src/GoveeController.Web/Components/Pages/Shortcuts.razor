@@ -40,7 +40,9 @@ else
                     </div>
                 </div>
                 <div>
-                    <button class="btn btn-primary" disabled="@_busy" @onclick="() => ApplyAsync(shortcut.Id)">Apply</button>
+                    <button class="btn btn-primary" disabled="@_busy" @onclick="() => ApplyAsync(shortcut.Id)">
+                        @(_applyingId == shortcut.Id ? "Applying…" : "Apply")
+                    </button>
                     <button class="btn" disabled="@_busy" @onclick="() => StartEdit(shortcut)">Edit</button>
                     <button class="btn btn-danger" disabled="@_busy" @onclick="() => DeleteAsync(shortcut.Id)">Delete</button>
                 </div>
@@ -117,7 +119,7 @@ else
                 <div>
                     <label>Delay before next (seconds)</label>
                     <InputNumber @bind-Value="_form.NextShortcutDelaySeconds" min="0" max="60" />
-                    <div class="control-hint">Enter a whole number from 0 to 60.</div>
+                    <div class="control-hint">Enter a whole number from 0 to 60. A longer delay helps chains covering many bulbs avoid Govee's rate limit.</div>
                 </div>
             }
         </div>
@@ -192,6 +194,12 @@ else
     private string? _error;
     private int? _editingId;
 
+    // Which shortcut's Apply button should show a busy label, distinct from the page-wide _busy
+    // flag - _busy also goes true for an Edit/Delete/Save on a different row, and a chain-linked
+    // shortcut can now take up to ~2 minutes to apply (see ShortcutService.ApplyShortcutAsync), so
+    // showing "Applying…" for every row whenever anything on the page is busy would be misleading.
+    private int? _applyingId;
+
     // Cancelled on dispose so an in-flight Govee/EF call doesn't run to completion and then touch
     // a disposed component (e.g. the user navigating away mid-request).
     private readonly CancellationTokenSource _cts = new();
@@ -240,6 +248,7 @@ else
     private async Task ApplyAsync(int id)
     {
         _busy = true;
+        _applyingId = id;
         try
         {
             await ShortcutService.ApplyShortcutAsync(id, _cts.Token);
@@ -264,6 +273,7 @@ else
         finally
         {
             _busy = false;
+            _applyingId = null;
         }
     }
 
