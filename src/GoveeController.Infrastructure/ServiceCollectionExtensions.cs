@@ -1,11 +1,14 @@
 using System.Threading.RateLimiting;
 using GoveeController.Application.Devices;
+using GoveeController.Application.Schedules;
 using GoveeController.Application.Shortcuts;
 using GoveeController.Infrastructure.Govee;
 using GoveeController.Infrastructure.Persistence;
+using GoveeController.Infrastructure.Scheduling;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Polly;
 using Polly.RateLimiting;
 
@@ -79,6 +82,13 @@ public static class ServiceCollectionExtensions
         // FakeTimeProvider so delay-honoring tests run instantly instead of actually sleeping.
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IShortcutService, ShortcutService>();
+
+        services.AddScoped<IScheduleRepository, ScheduleRepository>();
+        services.AddScoped<IScheduleService, ScheduleService>();
+        // Ticks on a fixed interval and fires due schedules by calling IShortcutService - see
+        // ScheduleRunnerService's own doc comment for why it creates its own DI scope per tick
+        // rather than depending on the scoped services above directly.
+        services.AddHostedService<ScheduleRunnerService>();
 
         return services;
     }
