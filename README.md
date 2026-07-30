@@ -284,6 +284,7 @@ GitHub only exposes that via a PAT. Without this secret set, the cleanup job fai
 |---|---|---|
 | `Govee:ApiKey` | `GOVEE_API_KEY` | Required. Your Govee Cloud API key. |
 | `ConnectionStrings:ShortcutsDb` | `ConnectionStrings__ShortcutsDb` | SQLite connection string. Defaults to `/data/shortcuts.db` in the container (see `Dockerfile`). |
+| — | `TZ` | Container timezone as an [IANA name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (e.g. `America/Chicago`). Defaults to UTC when unset. Anything time-of-day-based inside the container — including scheduled shortcuts — is interpreted in this timezone. |
 | — | *(host-side)* `./data` directory | Bind-mounted onto `/data` by `docker-compose.yml`, so `shortcuts.db` and the Data Protection `keys/` folder live directly on the host. Must be owned by UID/GID 1654 (the container's non-root `app` user) before first run — see "Running with Docker" above. |
 
 `GOVEE_API_KEY` is bridged to the `Govee:ApiKey` configuration key explicitly in `Program.cs`,
@@ -293,6 +294,26 @@ own documentation and tooling conventionally uses.
 
 Secrets are never checked into source control: `.env` is git-ignored, and `.env.example`
 documents what to put in it.
+
+### Changing the container's timezone
+
+The container runs in UTC unless told otherwise. To change it, set `TZ` in `.env`:
+
+```bash
+TZ=America/Chicago
+```
+
+then recreate the container (`docker compose up -d` — a restart alone does not re-read
+`.env`). Verify it took effect with:
+
+```bash
+docker compose exec govee-controller date
+```
+
+which should print the local wall-clock time. The runtime image already includes tzdata, so
+any IANA zone name works without Dockerfile changes. Get this right before creating
+schedules: schedule times mean wall-clock time in the container's timezone, so a container
+left on UTC runs a "10:00 PM" schedule at 10 PM UTC, not 10 PM local.
 
 ## What this app does not do
 
