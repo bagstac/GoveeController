@@ -1,5 +1,24 @@
 # Feature plan: Linked shortcuts
 
+> [!NOTE]
+> **Status: implemented and merged** (commit `048f143`, merged in `205ff3d`). Kept as a record of
+> the design reasoning. Do not execute it again.
+>
+> **Two instructions below turned out to be wrong** and were corrected during implementation — the
+> shipped code does the right thing, but don't take these two at face value if you're reading this
+> as reference:
+>
+> - **§3.5** says to call `timeProvider.Delay(...)`. `TimeProvider` has no `Delay` member. The real
+>   API is `Task.Delay(TimeSpan, TimeProvider, CancellationToken)`, which is what the code uses.
+> - **§9** assumes the repository test needs an explicit `PRAGMA foreign_keys = ON` because it opens
+>   its own connection. Verified false: `Microsoft.Data.Sqlite` enables `foreign_keys` by default on
+>   every connection it opens. No pragma is needed and none is present.
+>
+> One thing the plan didn't anticipate: SQLite has no `ALTER TABLE ADD FOREIGN KEY`, so applying the
+> migration rebuilds the whole `Shortcuts` table (copy/drop/rename) even though the generated
+> migration's C# only calls `AddColumn`/`CreateIndex`/`AddForeignKey`. That's expected EF behavior,
+> and the `ShortcutTarget` table and its FK survive it — verified against the live schema.
+
 Implementation plan for chaining shortcuts so that applying one runs a sequence of up to three.
 Written for another agent to execute. Everything below was derived from reading the current code
 (`Shortcut`, `ShortcutService`, `ShortcutRepository`, `AppDbContext`, `Shortcuts.razor`) and from

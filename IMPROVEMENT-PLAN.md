@@ -1,5 +1,20 @@
 # GoveeController — Code Review & Improvement Plan
 
+> [!NOTE]
+> **Status: implemented, except for the items deliberately left undone.** Kept as a record of the
+> review reasoning and of what was consciously deferred.
+>
+> Everything in priorities 1, 3, 4 (except 4.5), and 5 is done and merged. Deliberately **not**
+> done, and not oversights:
+>
+> - **§2.2** (reverse-proxy / basic-auth deployment) — optional. The chosen posture is documented in
+>   the README's "Security" section instead: keep it on a trusted LAN, or put a proxy/VPN in front.
+> - **§2.5** (Data Protection keys unencrypted at rest) — accepted risk for a single-user home
+>   deployment; the keys are persisted to the bind-mounted `./data/keys` so sessions survive restarts.
+> - **§4.5** (bUnit component tests) — optional and larger than it's worth right now.
+>
+> Note the "21/21 tests passing" figure below is from the original review; the suite is now 76.
+
 Review date: 2026-07-26 · Reviewed at commit `182cbfb` · Reviewer: Claude (Opus 5)
 
 This plan is written to be executed by another agent. Items are ordered by priority.
