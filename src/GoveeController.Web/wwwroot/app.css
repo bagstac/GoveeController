@@ -335,6 +335,26 @@ h1:focus {
     margin: 0;
 }
 
+.day-checklist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+}
+
+.day-checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.9rem;
+    font-weight: normal;
+    margin: 0;
+}
+
+.schedule-meta {
+    color: #888;
+    font-size: 0.85rem;
+}
+
 .valid.modified:not([type=checkbox]) {
     outline: 1px solid #26b050;
 }

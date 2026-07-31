@@ -39,19 +39,29 @@ what makes them unit-testable without a network connection or a database.
   only thing this app persists itself. Optionally names another shortcut to run after it — see
   "Linked shortcuts" below.
 - `ShortcutTarget` — one device a shortcut applies to; a shortcut has at least one.
+- `Schedule` / `ScheduleDays` — a rule that automatically applies a shortcut at a local wall-clock
+  time, recurring on one or more days of the week or once at a specific date and time — see
+  "Scheduled shortcuts" below.
 
 **Application** (`src/GoveeController.Application`)
-- `IGoveeApiClient` / `IShortcutRepository` — interfaces Infrastructure implements.
+- `IGoveeApiClient` / `IShortcutRepository` / `IScheduleRepository` — interfaces Infrastructure implements.
 - `IDeviceControlService` / `DeviceControlService` — device listing and control, with a short
   (~12s) in-memory cache on reads to stay well under Govee's 30 requests/minute rate limit.
 - `IShortcutService` / `ShortcutService` — CRUD for shortcuts, the chain-linking rules, and applying
   a shortcut to all of its devices before continuing down its chain.
+- `IScheduleService` / `ScheduleService` — CRUD for schedules and `RunDueSchedulesAsync`, which fires
+  every schedule that's due by calling `IShortcutService.ApplyShortcutAsync`. `NextOccurrence` is the
+  pure calculator that turns a schedule's local day/time configuration into its next due UTC instant.
 
 **Infrastructure** (`src/GoveeController.Infrastructure`)
 - `GoveeApiClient` — talks to `https://openapi.api.govee.com`. Retry/backoff for HTTP 429/5xx is
   configured via `Microsoft.Extensions.Http.Resilience`'s standard resilience handler (see
   `ServiceCollectionExtensions.AddGoveeInfrastructure`), not inside the client itself.
-- `AppDbContext` / `ShortcutRepository` — EF Core over SQLite, the only thing this app persists.
+- `AppDbContext` / `ShortcutRepository` / `ScheduleRepository` — EF Core over SQLite, the only
+  things this app persists.
+- `ScheduleRunnerService` — a hosted `BackgroundService` that ticks every 30 seconds and calls
+  `IScheduleService.RunDueSchedulesAsync`. Runs inside this same container/process; scheduling adds
+  no extra service, process, or container.
 - `ServiceCollectionExtensions.AddGoveeInfrastructure(configuration)` — one-call DI wiring, invoked
   from `Web/Program.cs`.
 
@@ -62,6 +72,8 @@ what makes them unit-testable without a network connection or a database.
   broadcast the same brightness/color/warmth to every bulb at once.
 - `Components/Pages/Shortcuts.razor` (`/shortcuts`) — list, apply, create, edit, delete, and link
   shortcuts.
+- `Components/Pages/Schedules.razor` (`/schedules`) — list, create, edit, delete, and enable/disable
+  schedules.
 - `Components/Shared/DeviceCard.razor` — the reusable per-device control panel.
 - `Program.cs` — the composition root; also runs pending EF Core migrations on startup so the
   SQLite schema self-initializes on first run.
@@ -101,6 +113,35 @@ The per-link delay is the lever that makes large chains work: spacing steps apar
 burst of calls into a different rate-limit window. For chains covering many bulbs, prefer longer
 delays. If you do hit the limit, the app surfaces a "Govee rate limit reached" message and — because
 applying is best-effort — later steps still run, so you may end up with a partially applied chain.
+
+## Scheduled shortcuts
+
+The **Schedules** page (`/schedules`) automatically applies a saved shortcut at a specific time,
+without you clicking Apply — either **recurring** (a time of day plus any combination of Mon–Sun),
+or **one-time** (a specific date and time). If the shortcut you schedule is itself linked to
+others (see "Linked shortcuts" above), the whole chain runs.
+
+**Set `TZ` before creating schedules.** Schedule times are local wall-clock time in the
+container's timezone — see "Changing the container's timezone" above. A container left on the
+default UTC will run a "10:00 PM" schedule at 10 PM UTC, not 10 PM wherever you actually are.
+
+A background loop inside this same container checks every 30 seconds for schedules that are due
+and applies them — there's no separate scheduler process or container to run.
+
+- **One-time schedules delete themselves after firing.** Once it's run, the row is gone; the app's
+  log (`docker logs`) records that it ran. Editing a one-time schedule's date to the past isn't
+  possible — the form rejects it.
+- **A missed schedule fires late within a 5-minute grace window, otherwise it's skipped.** If the
+  container was restarting exactly when a schedule was due, it still fires within about 5 minutes
+  of coming back up. Beyond that window (a longer outage, or the container being down for a while),
+  that occurrence is skipped rather than firing hours late — a recurring schedule waits for its next
+  normal occurrence; a missed one-time schedule is deleted, the same as if it had fired.
+- **Disabling a schedule clears its next-run time**; re-enabling it recomputes the next occurrence
+  from the current time, so a schedule left disabled for a week doesn't immediately fire the moment
+  you turn it back on.
+- Scheduled runs count against the same Govee rate-limit budget as manual Apply clicks and chains
+  (see above) — if several schedules land at the same time, they run one after another, not in
+  parallel.
 
 ## Security — read before deploying
 
@@ -284,6 +325,7 @@ GitHub only exposes that via a PAT. Without this secret set, the cleanup job fai
 |---|---|---|
 | `Govee:ApiKey` | `GOVEE_API_KEY` | Required. Your Govee Cloud API key. |
 | `ConnectionStrings:ShortcutsDb` | `ConnectionStrings__ShortcutsDb` | SQLite connection string. Defaults to `/data/shortcuts.db` in the container (see `Dockerfile`). |
+| — | `TZ` | Container timezone as an [IANA name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (e.g. `America/Chicago`). Defaults to UTC when unset. Anything time-of-day-based inside the container — including scheduled shortcuts — is interpreted in this timezone. |
 | — | *(host-side)* `./data` directory | Bind-mounted onto `/data` by `docker-compose.yml`, so `shortcuts.db` and the Data Protection `keys/` folder live directly on the host. Must be owned by UID/GID 1654 (the container's non-root `app` user) before first run — see "Running with Docker" above. |
 
 `GOVEE_API_KEY` is bridged to the `Govee:ApiKey` configuration key explicitly in `Program.cs`,
@@ -293,6 +335,26 @@ own documentation and tooling conventionally uses.
 
 Secrets are never checked into source control: `.env` is git-ignored, and `.env.example`
 documents what to put in it.
+
+### Changing the container's timezone
+
+The container runs in UTC unless told otherwise. To change it, set `TZ` in `.env`:
+
+```bash
+TZ=America/Chicago
+```
+
+then recreate the container (`docker compose up -d` — a restart alone does not re-read
+`.env`). Verify it took effect with:
+
+```bash
+docker compose exec govee-controller date
+```
+
+which should print the local wall-clock time. The runtime image already includes tzdata, so
+any IANA zone name works without Dockerfile changes. Get this right before creating
+schedules: schedule times mean wall-clock time in the container's timezone, so a container
+left on UTC runs a "10:00 PM" schedule at 10 PM UTC, not 10 PM local.
 
 ## What this app does not do
 

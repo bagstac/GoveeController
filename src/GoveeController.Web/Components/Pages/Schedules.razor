@@ -1,0 +1,379 @@
+@page "/schedules"
+@implements IDisposable
+@using GoveeController.Application.Schedules
+@using GoveeController.Application.Shortcuts
+@using GoveeController.Domain.Schedules
+@using GoveeController.Domain.Shortcuts
+@using GoveeController.Web.Components.Shared
+@inject IScheduleService ScheduleService
+@inject IShortcutService ShortcutService
+@inject TimeProvider TimeProvider
+@inject ILogger<Schedules> Logger
+
+<PageTitle>Schedules</PageTitle>
+
+<h1>Schedules</h1>
+<p>Automatically apply a shortcut on a recurring day/time or at a specific date and time.</p>
+
+@if (_error is not null)
+{
+    <div class="error-banner">@_error</div>
+}
+
+@if (_schedules is null)
+{
+    <p><em>Loading schedules…</em></p>
+}
+else if (_schedules.Count == 0)
+{
+    <p class="empty-state">No schedules yet.</p>
+}
+else
+{
+    <div class="shortcut-list">
+        @foreach (var schedule in _schedules)
+        {
+            <div class="shortcut-row">
+                <div>
+                    <strong>@ShortcutNameFor(schedule.ShortcutId)</strong>
+                    <div class="schedule-meta">@DescribeSchedule(schedule) &middot; Next run: @NextRunDisplay(schedule)</div>
+                </div>
+                <div class="shortcut-actions">
+                    <button class="toggle-btn @(schedule.IsEnabled ? "on" : "off")" disabled="@_busy" @onclick="() => ToggleEnabledAsync(schedule)">
+                        @(schedule.IsEnabled ? "Enabled" : "Disabled")
+                    </button>
+                    <button class="btn" disabled="@_busy" @onclick="() => StartEdit(schedule)">Edit</button>
+                    <button class="btn btn-danger" disabled="@_busy" @onclick="() => DeleteAsync(schedule.Id)">Delete</button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<h2>@(_editingId is null ? "New schedule" : "Edit schedule")</h2>
+
+@if (_shortcuts is null)
+{
+    @if (_error is null)
+    {
+        <p><em>Loading shortcuts…</em></p>
+    }
+}
+else if (_shortcuts.Count == 0)
+{
+    <p class="empty-state">No shortcuts available. Create one on the <a href="shortcuts">Shortcuts</a> page first.</p>
+}
+else
+{
+    <EditForm Model="_form" OnValidSubmit="SaveAsync">
+        <div class="form-grid">
+            <div>
+                <label>Shortcut</label>
+                <select value="@(_form.ShortcutId?.ToString() ?? "")" @onchange="OnFormShortcutChanged">
+                    <option value="">Select a shortcut…</option>
+                    @foreach (var shortcut in _shortcuts)
+                    {
+                        <option value="@shortcut.Id">@shortcut.Name</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label>Type</label>
+                <select value="@(_form.IsRecurring ? "recurring" : "onetime")" @onchange="OnFormModeChanged">
+                    <option value="recurring">Recurring</option>
+                    <option value="onetime">One-time</option>
+                </select>
+            </div>
+            @if (_form.IsRecurring)
+            {
+                <div>
+                    <label>Days</label>
+                    <div class="day-checklist">
+                        @foreach (var (day, label) in DayOptions)
+                        {
+                            <label class="day-checklist-item">
+                                <input type="checkbox"
+                                       checked="@_form.SelectedDays[(int)day]"
+                                       @onchange="e => ToggleDay(day, (bool)e.Value!)" />
+                                @label
+                            </label>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div>
+                    <label>Date</label>
+                    <InputDate @bind-Value="_form.OneTimeDate" Type="InputDateType.Date" />
+                </div>
+            }
+            <div>
+                <label>Time</label>
+                <InputDate @bind-Value="_form.TimeOfDay" Type="InputDateType.Time" />
+            </div>
+            <div>
+                <label class="day-checklist-item">
+                    <input type="checkbox" checked="@_form.IsEnabled" @onchange="e => _form.IsEnabled = (bool)e.Value!" />
+                    Enabled
+                </label>
+            </div>
+        </div>
+        <button class="btn btn-primary" type="submit" disabled="@_busy" style="margin-top:0.5rem;">
+            @(_editingId is null ? "Save schedule" : "Update schedule")
+        </button>
+        @if (_editingId is not null)
+        {
+            <button class="btn" type="button" disabled="@_busy" style="margin-top:0.5rem;" @onclick="CancelEdit">Cancel</button>
+        }
+    </EditForm>
+}
+
+@code {
+    private IReadOnlyList<Schedule>? _schedules;
+    private IReadOnlyList<Shortcut>? _shortcuts;
+    private readonly ScheduleFormModel _form = new();
+    private bool _busy;
+    private string? _error;
+    private int? _editingId;
+
+    // Cancelled on dispose so an in-flight Govee/EF call doesn't run to completion and then touch
+    // a disposed component - same rationale as Shortcuts.razor's _cts.
+    private readonly CancellationTokenSource _cts = new();
+
+    private static readonly (DayOfWeek Day, string Label)[] DayOptions =
+    [
+        (DayOfWeek.Sunday, "Sun"),
+        (DayOfWeek.Monday, "Mon"),
+        (DayOfWeek.Tuesday, "Tue"),
+        (DayOfWeek.Wednesday, "Wed"),
+        (DayOfWeek.Thursday, "Thu"),
+        (DayOfWeek.Friday, "Fri"),
+        (DayOfWeek.Saturday, "Sat")
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _schedules = await ScheduleService.ListSchedulesAsync(_cts.Token);
+            _shortcuts = await ShortcutService.ListShortcutsAsync(_cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _error = UserFacingError.From(ex, Logger, "Loading");
+        }
+
+        ResetForm();
+    }
+
+    private async Task ToggleEnabledAsync(Schedule schedule)
+    {
+        _busy = true;
+        try
+        {
+            await ScheduleService.SetEnabledAsync(schedule.Id, !schedule.IsEnabled, _cts.Token);
+            _schedules = await ScheduleService.ListSchedulesAsync(_cts.Token);
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = UserFacingError.From(ex, Logger, "Updating schedule");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(int id)
+    {
+        _busy = true;
+        try
+        {
+            await ScheduleService.DeleteScheduleAsync(id, _cts.Token);
+            _schedules = await ScheduleService.ListSchedulesAsync(_cts.Token);
+            if (_editingId == id)
+            {
+                ResetForm();
+            }
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = UserFacingError.From(ex, Logger, "Deleting schedule");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_form.ShortcutId is not { } shortcutId)
+        {
+            _error = "Select a shortcut.";
+            return;
+        }
+
+        var daysOfWeek = _form.IsRecurring ? ToMask(_form.SelectedDays) : ScheduleDays.None;
+        if (_form.IsRecurring && daysOfWeek == ScheduleDays.None)
+        {
+            _error = "Select at least one day.";
+            return;
+        }
+        var oneTimeDate = _form.IsRecurring ? (DateOnly?)null : _form.OneTimeDate;
+
+        _busy = true;
+        try
+        {
+            if (_editingId is { } id)
+            {
+                await ScheduleService.UpdateScheduleAsync(id, shortcutId, daysOfWeek, oneTimeDate, _form.TimeOfDay, _form.IsEnabled, _cts.Token);
+            }
+            else
+            {
+                await ScheduleService.CreateScheduleAsync(shortcutId, daysOfWeek, oneTimeDate, _form.TimeOfDay, _form.IsEnabled, _cts.Token);
+            }
+
+            _schedules = await ScheduleService.ListSchedulesAsync(_cts.Token);
+            ResetForm();
+            _error = null;
+        }
+        catch (Exception ex)
+        {
+            _error = UserFacingError.From(ex, Logger, "Saving schedule");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void StartEdit(Schedule schedule)
+    {
+        _editingId = schedule.Id;
+        _form.ShortcutId = schedule.ShortcutId;
+        _form.IsRecurring = schedule.DaysOfWeekMask != ScheduleDays.None;
+        ApplyMaskToSelectedDays(schedule.DaysOfWeekMask, _form.SelectedDays);
+        _form.OneTimeDate = schedule.OneTimeDateLocal ?? DateOnly.FromDateTime(TimeProvider.GetLocalNow().Date);
+        _form.TimeOfDay = schedule.TimeOfDayLocal;
+        _form.IsEnabled = schedule.IsEnabled;
+        _error = null;
+    }
+
+    private void CancelEdit()
+    {
+        ResetForm();
+        _error = null;
+    }
+
+    private void ResetForm()
+    {
+        _editingId = null;
+        _form.ShortcutId = null;
+        _form.IsRecurring = true;
+        Array.Clear(_form.SelectedDays);
+        _form.OneTimeDate = DateOnly.FromDateTime(TimeProvider.GetLocalNow().Date);
+        _form.TimeOfDay = new TimeOnly(20, 0);
+        _form.IsEnabled = true;
+    }
+
+    private void OnFormShortcutChanged(ChangeEventArgs e)
+    {
+        var value = (string?)e.Value;
+        _form.ShortcutId = string.IsNullOrEmpty(value) ? null : int.Parse(value);
+    }
+
+    private void OnFormModeChanged(ChangeEventArgs e)
+    {
+        _form.IsRecurring = (string?)e.Value == "recurring";
+    }
+
+    private void ToggleDay(DayOfWeek day, bool isSelected) => _form.SelectedDays[(int)day] = isSelected;
+
+    private static ScheduleDays ToMask(bool[] selectedDays)
+    {
+        var mask = ScheduleDays.None;
+        for (var day = 0; day < selectedDays.Length; day++)
+        {
+            if (selectedDays[day])
+            {
+                mask |= (ScheduleDays)(1 << day);
+            }
+        }
+        return mask;
+    }
+
+    private static void ApplyMaskToSelectedDays(ScheduleDays mask, bool[] selectedDays)
+    {
+        for (var day = 0; day < selectedDays.Length; day++)
+        {
+            selectedDays[day] = mask.HasFlag((ScheduleDays)(1 << day));
+        }
+    }
+
+    private string ShortcutNameFor(int shortcutId) =>
+        _shortcuts?.FirstOrDefault(s => s.Id == shortcutId)?.Name ?? $"#{shortcutId}";
+
+    // Named day-mask combinations get a friendlier label than a comma list; anything else falls
+    // back to listing the selected days by their three-letter abbreviation.
+    private const ScheduleDays EveryDay = ScheduleDays.Sunday | ScheduleDays.Monday | ScheduleDays.Tuesday
+        | ScheduleDays.Wednesday | ScheduleDays.Thursday | ScheduleDays.Friday | ScheduleDays.Saturday;
+    private const ScheduleDays Weekdays = ScheduleDays.Monday | ScheduleDays.Tuesday | ScheduleDays.Wednesday
+        | ScheduleDays.Thursday | ScheduleDays.Friday;
+    private const ScheduleDays Weekends = ScheduleDays.Saturday | ScheduleDays.Sunday;
+
+    private static string DescribeSchedule(Schedule schedule)
+    {
+        var time = schedule.TimeOfDayLocal.ToString("h:mm tt");
+
+        if (schedule.DaysOfWeekMask == ScheduleDays.None)
+        {
+            var date = schedule.OneTimeDateLocal is { } d ? d.ToString("MMM d") : "?";
+            return $"Once on {date} at {time}";
+        }
+
+        var daysLabel = schedule.DaysOfWeekMask switch
+        {
+            EveryDay => "Every day",
+            Weekdays => "Weekdays",
+            Weekends => "Weekends",
+            _ => string.Join(", ", DayOptions.Where(o => schedule.DaysOfWeekMask.HasFlag(ToScheduleDays(o.Day))).Select(o => o.Label))
+        };
+
+        return $"{daysLabel} at {time}";
+    }
+
+    private static ScheduleDays ToScheduleDays(DayOfWeek day) => (ScheduleDays)(1 << (int)day);
+
+    private string NextRunDisplay(Schedule schedule)
+    {
+        if (schedule.NextRunAtUtc is not { } nextUtc)
+        {
+            return "—";
+        }
+
+        var local = TimeZoneInfo.ConvertTimeFromUtc(nextUtc, TimeProvider.LocalTimeZone);
+        return local.ToString("ddd, MMM d 'at' h:mm tt");
+    }
+
+    /// <summary>Backing model for the schedule form; kept simple/flat for Blazor's EditForm binding.</summary>
+    private sealed class ScheduleFormModel
+    {
+        public int? ShortcutId { get; set; }
+        public bool IsRecurring { get; set; } = true;
+        public bool[] SelectedDays { get; } = new bool[7];
+        public DateOnly OneTimeDate { get; set; }
+        public TimeOnly TimeOfDay { get; set; }
+        public bool IsEnabled { get; set; } = true;
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}

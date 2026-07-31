@@ -8,6 +8,11 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      # Container timezone (IANA name, e.g. America/Chicago) so "local time" inside the
+      # container means the user's wall clock, not UTC. Set TZ in .env; defaults to UTC when
+      # unset. The base image ships tzdata, so no Dockerfile change is needed for this to work.
+      - TZ=${TZ:-UTC}
     volumes:
       # Bind-mounted to a host directory (not a Docker-managed named volume) so the SQLite
       # database is a real, directly accessible file on the host filesystem — easy to back up,
