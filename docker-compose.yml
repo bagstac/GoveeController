@@ -23,6 +23,15 @@ services:
     # The Dockerfile already declares a HEALTHCHECK (hitting /health); Compose picks that up
     # automatically. `restart: unless-stopped` only recovers from a crash on its own — combined
     # with the healthcheck, Docker also restarts a container that's still running but unresponsive.
+    logging:
+      # Docker's json-file driver has no size cap unless configured — without this, container
+      # logs grow forever and can quietly fill the disk (a real risk on a Pi's SD card). Caps
+      # total retention at 3 * 10MB = 30MB, auto-rotated by Docker itself; no cron job or manual
+      # cleanup needed. `docker logs` still works normally against the rotated files.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
