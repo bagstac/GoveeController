@@ -201,6 +201,11 @@ Shortcuts are persisted in `./data/shortcuts.db` — a real file on the host fil
 volume — see "Configuration reference" below), so they survive `docker compose down`/`up` and
 image rebuilds, and can be backed up, inspected, or moved without touching Docker at all.
 
+`docker-compose.yml` caps the container's logs at 3 × 10MB (auto-rotated by Docker's `json-file`
+driver) so `docker logs` output can't grow unbounded and quietly fill the disk — this matters
+more than it used to now that the background schedule runner logs a line every 30 seconds.
+`docker logs` works normally against the rotated files; nothing else to run or configure.
+
 ## Running on a Raspberry Pi
 
 Both `linux/arm64` (Pi 3/4/5 running 64-bit Raspberry Pi OS) and `linux/arm/v7` (32-bit-only
