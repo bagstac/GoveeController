@@ -31,7 +31,14 @@ public sealed class ScheduleRunnerService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Schedule runner started, ticking every {TickInterval}.", TickInterval);
+        // Logs what .NET itself resolved TimeProvider.LocalTimeZone to, not just what the OS-level
+        // TZ variable is set to - this is the actual value every schedule's due time is computed
+        // against, so confirming it here (rather than cross-referencing `docker exec ... date`)
+        // removes a whole class of "is TZ actually being read by the app" uncertainty when
+        // troubleshooting a schedule that fired at the wrong wall-clock time.
+        _logger.LogInformation(
+            "Schedule runner started, ticking every {TickInterval}. Local time zone: {TimeZoneId}, local now: {LocalNow:o} (UTC now: {UtcNow:o}).",
+            TickInterval, _timeProvider.LocalTimeZone.Id, _timeProvider.GetLocalNow(), _timeProvider.GetUtcNow());
 
         while (!stoppingToken.IsCancellationRequested)
         {

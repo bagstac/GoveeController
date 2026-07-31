@@ -43,6 +43,15 @@ public sealed class ScheduleService : IScheduleService
         bool isEnabled,
         CancellationToken cancellationToken = default)
     {
+        // Logged before validation runs (not just on success) so a rejected submission - e.g. the
+        // UI silently sending something the user didn't intend - still leaves a trace of what was
+        // actually attempted. UserFacingError.From deliberately does not log ArgumentException
+        // (it's shown to the user as-is instead), so without this line a validation failure here
+        // would otherwise never appear in the server log at all.
+        _logger.LogInformation(
+            "CreateScheduleAsync: shortcutId={ShortcutId}, days={DaysMask}, oneTimeDate={OneTimeDate}, timeOfDay={TimeOfDay}, enabled={IsEnabled}.",
+            shortcutId, daysOfWeek, oneTimeDateLocal, timeOfDayLocal, isEnabled);
+
         ValidateMode(daysOfWeek, oneTimeDateLocal);
         await EnsureShortcutExistsAsync(shortcutId, cancellationToken).ConfigureAwait(false);
 
@@ -60,7 +69,9 @@ public sealed class ScheduleService : IScheduleService
             NextRunAtUtc = isEnabled ? nextRunAtUtc : null
         };
 
-        return await _repository.AddAsync(schedule, cancellationToken).ConfigureAwait(false);
+        var created = await _repository.AddAsync(schedule, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Created schedule {ScheduleId} for shortcut {ShortcutId}; nextRunAtUtc={NextRunAtUtc:o}.", created.Id, shortcutId, created.NextRunAtUtc);
+        return created;
     }
 
     /// <inheritdoc />
@@ -73,6 +84,11 @@ public sealed class ScheduleService : IScheduleService
         bool isEnabled,
         CancellationToken cancellationToken = default)
     {
+        // See CreateScheduleAsync's comment on logging before validation runs.
+        _logger.LogInformation(
+            "UpdateScheduleAsync: id={ScheduleId}, shortcutId={ShortcutId}, days={DaysMask}, oneTimeDate={OneTimeDate}, timeOfDay={TimeOfDay}, enabled={IsEnabled}.",
+            id, shortcutId, daysOfWeek, oneTimeDateLocal, timeOfDayLocal, isEnabled);
+
         ValidateMode(daysOfWeek, oneTimeDateLocal);
         await EnsureShortcutExistsAsync(shortcutId, cancellationToken).ConfigureAwait(false);
 
@@ -91,6 +107,7 @@ public sealed class ScheduleService : IScheduleService
         };
 
         await _repository.UpdateAsync(schedule, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Updated schedule {ScheduleId}; nextRunAtUtc={NextRunAtUtc:o}.", id, schedule.NextRunAtUtc);
     }
 
     /// <inheritdoc />
@@ -110,6 +127,9 @@ public sealed class ScheduleService : IScheduleService
             : null;
 
         await _repository.UpdateAsync(existing, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation(
+            "Schedule {ScheduleId} set to {EnabledState}; nextRunAtUtc={NextRunAtUtc:o}.",
+            id, isEnabled ? "enabled" : "disabled", existing.NextRunAtUtc);
     }
 
     /// <inheritdoc />
@@ -121,10 +141,39 @@ public sealed class ScheduleService : IScheduleService
     {
         var nowUtc = _timeProvider.GetUtcNow();
         var all = await _repository.GetAllAsync(cancellationToken).ConfigureAwait(false);
+        var enabled = all.Where(s => s.IsEnabled).ToList();
         // Compare via .UtcDateTime (DateTime <= DateTime) rather than "next <= nowUtc" directly -
         // see the comment on the same pattern in RunOneAsync for why the DateTime/DateTimeOffset
         // implicit conversion is not safe to rely on here.
-        var due = all.Where(s => s.IsEnabled && s.NextRunAtUtc is { } next && next <= nowUtc.UtcDateTime).ToList();
+        var due = enabled.Where(s => s.NextRunAtUtc is { } next && next <= nowUtc.UtcDateTime).ToList();
+
+        // A one-line heartbeat every tick (~2880/day at the current 30s interval) - cheap, and the
+        // single most useful line for confirming the runner is actually alive and ticking versus
+        // silently stuck or crash-looping. The per-schedule detail below is Debug-gated since it
+        // scales with schedule count; appsettings.json enables Debug for this category by default
+        // so it's visible without extra configuration while this feature is still being verified.
+        _logger.LogInformation(
+            "Schedule tick at {NowUtc:o} (local {LocalNow:o}): {TotalCount} schedule(s), {EnabledCount} enabled, {DueCount} due.",
+            nowUtc, _timeProvider.GetLocalNow(), all.Count, enabled.Count, due.Count);
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            foreach (var schedule in all)
+            {
+                var status = !schedule.IsEnabled
+                    ? "disabled"
+                    : schedule.NextRunAtUtc is not { } next
+                        ? "enabled but NextRunAtUtc is null (unexpected)"
+                        : next <= nowUtc.UtcDateTime
+                            ? $"DUE ({nowUtc.UtcDateTime - next} overdue)"
+                            : $"not due for {next - nowUtc.UtcDateTime}";
+                _logger.LogDebug(
+                    "Schedule {ScheduleId} (shortcut {ShortcutId}): days={DaysMask}, oneTimeDate={OneTimeDate}, " +
+                    "timeOfDay={TimeOfDay}, nextRunAtUtc={NextRunAtUtc:o} -> {Status}",
+                    schedule.Id, schedule.ShortcutId, schedule.DaysOfWeekMask, schedule.OneTimeDateLocal,
+                    schedule.TimeOfDayLocal, schedule.NextRunAtUtc, status);
+            }
+        }
 
         // Sequential, not parallel - see SCHEDULED-SHORTCUTS-PLAN.md §3.5. Multiple schedules
         // landing on the same tick is rare, and running them one after another keeps this within
@@ -215,11 +264,13 @@ public sealed class ScheduleService : IScheduleService
         if (schedule.DaysOfWeekMask == ScheduleDays.None)
         {
             await _repository.DeleteAsync(schedule.Id, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Schedule {ScheduleId} was one-time; deleted after being handled.", schedule.Id);
             return;
         }
 
         schedule.NextRunAtUtc = NextOccurrence.ComputeNextRunAtUtc(
             schedule.DaysOfWeekMask, schedule.OneTimeDateLocal, schedule.TimeOfDayLocal, nowUtc, _timeProvider.LocalTimeZone);
         await _repository.UpdateAsync(schedule, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Schedule {ScheduleId} advanced to its next occurrence: nextRunAtUtc={NextRunAtUtc:o}.", schedule.Id, schedule.NextRunAtUtc);
     }
 }
