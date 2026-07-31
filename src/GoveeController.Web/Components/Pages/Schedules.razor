@@ -214,6 +214,11 @@ else
         if (_form.ShortcutId is not { } shortcutId)
         {
             _error = "Select a shortcut.";
+            // These two checks return before ever calling ScheduleService, so without a log line
+            // here they would leave no trace at all in the server log - a rejected save would look
+            // identical to nothing having happened, which is exactly the kind of gap that makes a
+            // "why isn't my schedule firing" report hard to diagnose from logs alone.
+            Logger.LogInformation("Schedule save rejected client-side: no shortcut selected.");
             return;
         }
 
@@ -221,6 +226,7 @@ else
         if (_form.IsRecurring && daysOfWeek == ScheduleDays.None)
         {
             _error = "Select at least one day.";
+            Logger.LogInformation("Schedule save rejected client-side: recurring with no days selected (shortcutId={ShortcutId}).", shortcutId);
             return;
         }
         var oneTimeDate = _form.IsRecurring ? (DateOnly?)null : _form.OneTimeDate;
