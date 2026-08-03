@@ -8,11 +8,13 @@ themselves be chained from and can reference other composites. Think "playlist o
 
 > [!NOTE]
 > **Status: implemented and merged.** All five phases complete — 136 tests passing (114 prior +
-> 22 new), full solution builds with 0 warnings under CI `TreatWarningsAsErrors`. One design
-> correction made during implementation: `ShortcutReference.ReferencedShortcutId` is **nullable**
-> (`int?`) rather than `int`, because `OnDelete(SetNull)` requires a nullable FK — a non-nullable FK
-> with SetNull causes a constraint violation when a referenced shortcut is deleted via
-> `ExecuteDeleteAsync` (SQLite enforces FK actions at the DB level). This mirrors the existing
+> 22 new), full solution builds with 0 warnings under CI `TreatWarningsAsErrors`. Deployed to the
+> Pi (`192.168.1.171`) via the GHCR pull flow; migration applied on the live DB. **Real-hardware
+> smoke test passed** (composite created and applied against actual bulbs, owner-verified).
+> One design correction made during implementation: `ShortcutReference.ReferencedShortcutId` is
+> **nullable** (`int?`) rather than `int`, because `OnDelete(SetNull)` requires a nullable FK — a
+> non-nullable FK with SetNull causes a constraint violation when a referenced shortcut is deleted
+> via `ExecuteDeleteAsync` (SQLite enforces FK actions at the DB level). This mirrors the existing
 > `Shortcut.NextShortcutId` pattern exactly. Additionally, chain following (`NextShortcutId`) was
 > moved inside the recursive `ApplyOneAsync` so that a referenced shortcut runs in full including
 > its own chain — the plan's original design only followed chains at the top level.
@@ -474,7 +476,7 @@ implementation.
 
 ## Handoff *(for resuming after session loss)*
 
-- **Last completed step:** All — Phase 5 (tests) done, full solution builds 0-warning, 136/136 tests pass
-- **Current state:** Composite shortcuts fully implemented (Domain, Persistence + migration, Service, UI, tests)
-- **Next action:** None — feature complete. Optional follow-ups: manual real-hardware validation via `docker compose up --build -d`, README already documents the feature.
+- **Last completed step:** All — Phase 5 (tests) done, full solution builds 0-warning, 136/136 tests pass, deployed to Pi, **real-hardware smoke test passed**
+- **Current state:** Composite shortcuts fully implemented (Domain, Persistence + migration, Service, UI, tests) and verified against actual bulbs
+- **Next action:** None — feature complete and shipped.
 - **Branch:** `feature/composite-shortcuts`
