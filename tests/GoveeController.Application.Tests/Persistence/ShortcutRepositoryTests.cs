@@ -209,4 +209,121 @@ public sealed class ShortcutRepositoryTests : IDisposable
         // service is not the only possible writer of this table over the app's lifetime.
         await Assert.ThrowsAsync<DbUpdateException>(() => _repository.AddAsync(secondPredecessor));
     }
+
+    // --- Composite references (COMPOSITE-SHORTCUTS-PLAN.md) ---
+
+    [Fact]
+    public async Task AddAsync_ThenGetByIdAsync_RoundTripsReferencedShortcuts()
+    {
+        var a = await _repository.AddAsync(new Shortcut { Name = "A", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var b = await _repository.AddAsync(new Shortcut { Name = "B", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+
+        var composite = new Shortcut
+        {
+            Name = "Movie Night",
+            PowerOn = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts =
+            [
+                new ShortcutReference { ReferencedShortcutId = b.Id, DelaySeconds = 5, Order = 0 },
+                new ShortcutReference { ReferencedShortcutId = a.Id, DelaySeconds = 0, Order = 1 }
+            ]
+        };
+        var added = await _repository.AddAsync(composite);
+
+        var loaded = await _repository.GetByIdAsync(added.Id);
+        Assert.NotNull(loaded);
+        Assert.Equal("Movie Night", loaded!.Name);
+        Assert.Empty(loaded.Targets);
+        var references = loaded.ReferencedShortcuts.OrderBy(r => r.Order).ToList();
+        Assert.Equal(2, references.Count);
+        Assert.Equal(b.Id, references[0].ReferencedShortcutId);
+        Assert.Equal(5, references[0].DelaySeconds);
+        Assert.Equal(a.Id, references[1].ReferencedShortcutId);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_ReplacesReferencedShortcuts_WithoutLeavingOrphans()
+    {
+        var a = await _repository.AddAsync(new Shortcut { Name = "A", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var b = await _repository.AddAsync(new Shortcut { Name = "B", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var c = await _repository.AddAsync(new Shortcut { Name = "C", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var composite = await _repository.AddAsync(new Shortcut
+        {
+            Name = "Composite",
+            PowerOn = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts =
+            [
+                new ShortcutReference { ReferencedShortcutId = a.Id, DelaySeconds = 0, Order = 0 },
+                new ShortcutReference { ReferencedShortcutId = b.Id, DelaySeconds = 0, Order = 1 }
+            ]
+        });
+
+        var updated = new Shortcut
+        {
+            Id = composite.Id,
+            Name = "Composite (renamed)",
+            PowerOn = false,
+            ReferencedShortcuts =
+            [
+                new ShortcutReference { ReferencedShortcutId = c.Id, DelaySeconds = 10, Order = 0 }
+            ]
+        };
+        await _repository.UpdateAsync(updated);
+
+        var loaded = await _repository.GetByIdAsync(composite.Id);
+        Assert.NotNull(loaded);
+        var reference = Assert.Single(loaded!.ReferencedShortcuts);
+        Assert.Equal(c.Id, reference.ReferencedShortcutId);
+        Assert.Equal(10, reference.DelaySeconds);
+
+        // The two original references must be gone entirely, not orphaned rows.
+        Assert.Equal(1, await _db.Set<ShortcutReference>().CountAsync());
+    }
+
+    [Fact]
+    public async Task DeletingAReferencedShortcut_ClearsTheReference_InsteadOfDeletingTheComposite()
+    {
+        // ExecuteDeleteAsync issues a raw SQL DELETE, so the SetNull behavior configured on
+        // ShortcutReference.ReferencedShortcutId relies on SQLite's own FK enforcement (enabled by
+        // default on every Microsoft.Data.Sqlite connection — see the equivalent chain-link test).
+        var referenced = await _repository.AddAsync(new Shortcut { Name = "Referenced", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var composite = await _repository.AddAsync(new Shortcut
+        {
+            Name = "Composite",
+            PowerOn = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [new ShortcutReference { ReferencedShortcutId = referenced.Id, DelaySeconds = 0, Order = 0 }]
+        });
+
+        await _repository.DeleteAsync(referenced.Id);
+
+        Assert.Null(await _repository.GetByIdAsync(referenced.Id));
+        var reloadedComposite = await _repository.GetByIdAsync(composite.Id);
+        Assert.NotNull(reloadedComposite);
+        var reference = Assert.Single(reloadedComposite!.ReferencedShortcuts);
+        Assert.Null(reference.ReferencedShortcutId);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_CascadesToReferencedShortcuts()
+    {
+        var a = await _repository.AddAsync(new Shortcut { Name = "A", PowerOn = true, CreatedAtUtc = DateTime.UtcNow });
+        var composite = await _repository.AddAsync(new Shortcut
+        {
+            Name = "Composite",
+            PowerOn = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [new ShortcutReference { ReferencedShortcutId = a.Id, DelaySeconds = 0, Order = 0 }]
+        });
+
+        await _repository.DeleteAsync(composite.Id);
+
+        Assert.Null(await _repository.GetByIdAsync(composite.Id));
+        Assert.Equal(0, await _db.Set<ShortcutReference>().CountAsync());
+        // The referenced shortcut itself must survive — deleting the composite never deletes what
+        // it references.
+        Assert.NotNull(await _repository.GetByIdAsync(a.Id));
+    }
 }

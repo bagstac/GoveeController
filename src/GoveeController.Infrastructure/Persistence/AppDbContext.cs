@@ -58,6 +58,25 @@ public sealed class AppDbContext : DbContext
             entity.Property(t => t.DeviceId).IsRequired().HasMaxLength(100);
         });
 
+        modelBuilder.Entity<ShortcutReference>(entity =>
+        {
+            entity.HasKey(r => r.Id);
+            entity.HasOne<Shortcut>()
+                .WithMany(s => s.ReferencedShortcuts)
+                .HasForeignKey(r => r.ShortcutId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Plain FK to the referenced shortcut — no navigation property (same style as
+            // Shortcut.NextShortcutId). SetNull (not Cascade) so deleting a referenced shortcut
+            // just breaks the link instead of deleting the composite that references it.
+            entity.HasOne<Shortcut>()
+                .WithMany()
+                .HasForeignKey(r => r.ReferencedShortcutId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.Property(r => r.DelaySeconds).HasDefaultValue(0);
+        });
+
         modelBuilder.Entity<Schedule>(entity =>
         {
             entity.HasKey(s => s.Id);

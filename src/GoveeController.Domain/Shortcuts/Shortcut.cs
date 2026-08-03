@@ -16,8 +16,20 @@ public sealed class Shortcut
     /// <summary>User-chosen display name for the shortcut (e.g. "Movie Mode", "Reading").</summary>
     public required string Name { get; set; }
 
-    /// <summary>The devices this shortcut applies its settings to. Must contain at least one target.</summary>
+    /// <summary>
+    /// The devices this shortcut applies its settings to. Must contain at least one target, unless
+    /// this is a composite shortcut (see <see cref="ReferencedShortcuts"/>). A shortcut has targets
+    /// XOR referenced shortcuts, never both.
+    /// </summary>
     public List<ShortcutTarget> Targets { get; set; } = [];
+
+    /// <summary>
+    /// Shortcuts to run as part of this composite shortcut, in order. Only meaningful (and non-empty)
+    /// when this shortcut has no <see cref="Targets"/> — a shortcut is either device-targeted or
+    /// composite, never both. Each referenced shortcut runs in full (including its own chain) before
+    /// the next one starts, after waiting its configured delay.
+    /// </summary>
+    public List<ShortcutReference> ReferencedShortcuts { get; set; } = [];
 
     /// <summary>Power state to apply.</summary>
     public required bool PowerOn { get; set; }

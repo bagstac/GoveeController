@@ -38,6 +38,10 @@ else
                         @onclick="() => ToggleExpanded(shortcut.Id)">
                     <span class="shortcut-caret" aria-hidden="true">@(IsExpanded(shortcut.Id) ? "▾" : "▸")</span>
                     <strong>@shortcut.Name</strong>
+                    @if (IsCompositeShortcut(shortcut))
+                    {
+                        <span class="composite-badge" aria-label="Composite shortcut">Composite</span>
+                    }
                 </button>
 
                 <div class="shortcut-actions">
@@ -51,13 +55,25 @@ else
                 @if (IsExpanded(shortcut.Id))
                 {
                     <div class="shortcut-details">
-                        <ul>
-                            @foreach (var name in DeviceNamesListFor(shortcut))
-                            {
-                                <li>@name</li>
-                            }
-                        </ul>
-                        <div>@(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")</div>
+                        @if (IsCompositeShortcut(shortcut))
+                        {
+                            <ul>
+                                @foreach (var name in ReferencedShortcutNamesListFor(shortcut))
+                                {
+                                    <li>@name</li>
+                                }
+                            </ul>
+                        }
+                        else
+                        {
+                            <ul>
+                                @foreach (var name in DeviceNamesListFor(shortcut))
+                                {
+                                    <li>@name</li>
+                                }
+                            </ul>
+                            <div>@(shortcut.PowerOn ? "On" : "Off")@(shortcut.Brightness is { } b ? $" · {b}%" : "")</div>
+                        }
                         @if (ChainLabelFor(shortcut) is { } chainLabel)
                         {
                             <div>@chainLabel</div>
@@ -91,37 +107,96 @@ else
                 <InputText @bind-Value="_form.Name" placeholder="e.g. Movie Mode" />
             </div>
             <div>
-                <label>Devices</label>
-                <button type="button" class="btn device-picker-trigger" @onclick="() => _showDeviceModal = true">
-                    @DeviceDropdownSummary()
-                </button>
+                <label>Type</label>
+                <div class="segmented-control">
+                    <button type="button" class="btn @(_isComposite ? "" : "active")" @onclick="() => SetMode(false)">Device shortcut</button>
+                    <button type="button" class="btn @(_isComposite ? "active" : "")" @onclick="() => SetMode(true)">Composite shortcut</button>
+                </div>
             </div>
-            <div>
-                <label>Power</label>
-                <InputSelect @bind-Value="_form.PowerOn">
-                    <option value="true">On</option>
-                    <option value="false">Off</option>
-                </InputSelect>
+        </div>
+
+        @if (_isComposite)
+        {
+            <div class="composite-builder">
+                <label>Referenced shortcuts</label>
+                <div class="composite-picker-row">
+                    <select value="@(_selectedReferencedShortcutId?.ToString() ?? "")" @onchange="OnSelectedReferencedShortcutChanged">
+                        <option value="">Select a shortcut…</option>
+                        @foreach (var candidate in _eligibleReferencedShortcuts)
+                        {
+                            <option value="@candidate.Id">@candidate.Name</option>
+                        }
+                    </select>
+                    <button type="button" class="btn" @onclick="AddReferencedShortcut">Add</button>
+                </div>
+
+                @if (_referencedShortcuts.Count == 0)
+                {
+                    <p class="control-hint">Add at least one shortcut to run, in the order you want them applied.</p>
+                }
+                else
+                {
+                    <ol class="composite-list">
+                        @for (var i = 0; i < _referencedShortcuts.Count; i++)
+                        {
+                            var index = i;
+                            var entry = _referencedShortcuts[i];
+                            <li>
+                                <span class="composite-name">@entry.Name</span>
+                                <label class="composite-delay">
+                                    <input type="number" min="0" max="60" value="@entry.DelaySeconds"
+                                           @onchange="e => SetReferencedDelay(index, e.Value)" />
+                                    s
+                                </label>
+                                <button type="button" class="btn" disabled="@(index == 0)" @onclick="() => MoveReferencedShortcut(index, -1)">↑</button>
+                                <button type="button" class="btn" disabled="@(index == _referencedShortcuts.Count - 1)" @onclick="() => MoveReferencedShortcut(index, 1)">↓</button>
+                                <button type="button" class="btn btn-danger" @onclick="() => RemoveReferencedShortcut(index)">Remove</button>
+                            </li>
+                        }
+                    </ol>
+                }
             </div>
-            <div>
-                <label>Brightness (optional)</label>
-                <InputNumber @bind-Value="_form.Brightness" min="0" max="100" />
-                <div class="control-hint">Enter a whole number from 0 to 100.</div>
+        }
+        else
+        {
+            <div class="form-grid">
+                <div>
+                    <label>Devices</label>
+                    <button type="button" class="btn device-picker-trigger" @onclick="() => _showDeviceModal = true">
+                        @DeviceDropdownSummary()
+                    </button>
+                </div>
+                <div>
+                    <label>Power</label>
+                    <InputSelect @bind-Value="_form.PowerOn">
+                        <option value="true">On</option>
+                        <option value="false">Off</option>
+                    </InputSelect>
+                </div>
+                <div>
+                    <label>Brightness (optional)</label>
+                    <InputNumber @bind-Value="_form.Brightness" min="0" max="100" />
+                    <div class="control-hint">Enter a whole number from 0 to 100.</div>
+                </div>
+                <div>
+                    <label>Color (optional)</label>
+                    <InputText type="color" @bind-Value="_form.ColorHex" />
+                </div>
+                <div>
+                    <label>Warmth (optional)</label>
+                    <select value="@(_form.ColorTemperatureKelvin?.ToString() ?? "")" @onchange="OnFormColorTemperatureChanged">
+                        <option value="">Not set</option>
+                        @foreach (var kelvin in WarmthOptions.Generate(ColorTemperatureMin, ColorTemperatureMax, _form.ColorTemperatureKelvin ?? ColorTemperatureMin))
+                        {
+                            <option value="@kelvin">@kelvin K</option>
+                        }
+                    </select>
+                </div>
             </div>
-            <div>
-                <label>Color (optional)</label>
-                <InputText type="color" @bind-Value="_form.ColorHex" />
-            </div>
-            <div>
-                <label>Warmth (optional)</label>
-                <select value="@(_form.ColorTemperatureKelvin?.ToString() ?? "")" @onchange="OnFormColorTemperatureChanged">
-                    <option value="">Not set</option>
-                    @foreach (var kelvin in WarmthOptions.Generate(ColorTemperatureMin, ColorTemperatureMax, _form.ColorTemperatureKelvin ?? ColorTemperatureMin))
-                    {
-                        <option value="@kelvin">@kelvin K</option>
-                    }
-                </select>
-            </div>
+            <p class="control-hint" style="margin-top:0.4rem;">Set either a color or a color temperature, not both.</p>
+        }
+
+        <div class="form-grid">
             <div>
                 <label>Then run (optional)</label>
                 <select value="@(_form.NextShortcutId?.ToString() ?? "")" @onchange="OnFormNextShortcutChanged">
@@ -141,7 +216,7 @@ else
                 </div>
             }
         </div>
-        <p class="control-hint" style="margin-top:0.4rem;">Set either a color or a color temperature, not both.</p>
+
         <button class="btn btn-primary" type="submit" disabled="@_busy" style="margin-top:0.5rem;">
             @(_editingId is null ? "Save shortcut" : "Update shortcut")
         </button>
@@ -212,6 +287,15 @@ else
     private string? _error;
     private int? _editingId;
 
+    // Composite-shortcut form state. A composite shortcut has no device targets; instead it
+    // references other shortcuts and runs them in order. _isComposite picks the form mode;
+    // _referencedShortcuts holds the ordered list being built; _eligibleReferencedShortcuts and
+    // _selectedReferencedShortcutId drive the "add a shortcut" dropdown.
+    private bool _isComposite;
+    private readonly List<ReferencedShortcutEntry> _referencedShortcuts = [];
+    private IReadOnlyList<Shortcut> _eligibleReferencedShortcuts = [];
+    private int? _selectedReferencedShortcutId;
+
     // Which shortcut's Apply button should show a busy label, distinct from the page-wide _busy
     // flag - _busy also goes true for an Edit/Delete/Save on a different row, and a chain-linked
     // shortcut can now take up to ~2 minutes to apply (see ShortcutService.ApplyShortcutAsync), so
@@ -247,6 +331,7 @@ else
         }
 
         await RefreshEligibleNextShortcutsAsync();
+        await RefreshEligibleReferencedShortcutsAsync();
     }
 
     /// <summary>
@@ -260,6 +345,24 @@ else
         try
         {
             _eligibleNextShortcuts = await ShortcutService.ListEligibleNextShortcutsAsync(_editingId, _cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _error = UserFacingError.From(ex, Logger, "Loading eligible shortcuts");
+        }
+    }
+
+    /// <summary>
+    /// Re-fetches which shortcuts may legally be referenced by the composite the form is currently
+    /// editing (null while creating a new one). Scoped the same way as the "Then run" dropdown:
+    /// excludes anything that would create a cycle, and re-runs whenever _editingId or the saved
+    /// shortcut set changes.
+    /// </summary>
+    private async Task RefreshEligibleReferencedShortcutsAsync()
+    {
+        try
+        {
+            _eligibleReferencedShortcuts = await ShortcutService.ListEligibleReferencedShortcutsAsync(_editingId, _cts.Token);
         }
         catch (Exception ex)
         {
@@ -311,6 +414,7 @@ else
                 ResetForm();
             }
             await RefreshEligibleNextShortcutsAsync();
+            await RefreshEligibleReferencedShortcutsAsync();
         }
         catch (Exception ex)
         {
@@ -324,16 +428,23 @@ else
 
     private async Task SaveAsync()
     {
-        if (_devices is null)
-        {
-            return;
-        }
-
-        var targets = _devices
-            .Where(d => _form.SelectedDeviceIds.Contains(d.Id))
-            .Select(d => (d.Sku, d.Id))
+        // A shortcut is either device-targeted or composite (never both) — see ShortcutService.
+        // Resolve the composite references up front so the validation and the save branch below
+        // stay flat.
+        var references = _referencedShortcuts
+            .Where(r => r.ShortcutId is not null)
+            .Select(r => (r.ShortcutId!.Value, r.DelaySeconds))
             .ToList();
-        if (targets.Count == 0)
+
+        if (_isComposite)
+        {
+            if (references.Count == 0)
+            {
+                _error = "Add at least one referenced shortcut.";
+                return;
+            }
+        }
+        else if (_devices is not null && _form.SelectedDeviceIds.Count == 0)
         {
             _error = "Select at least one device.";
             return;
@@ -342,44 +453,80 @@ else
         _busy = true;
         try
         {
-            RgbColor? color = string.IsNullOrWhiteSpace(_form.ColorHex) ? null : RgbColor.FromHex(_form.ColorHex);
-            if (color is not null && _form.ColorTemperatureKelvin is not null)
+            if (_isComposite)
             {
-                _error = "Set either a color or a color temperature, not both.";
-                return;
-            }
-
-            if (_editingId is { } id)
-            {
-                await ShortcutService.UpdateShortcutAsync(
-                    id,
-                    _form.Name,
-                    targets,
-                    _form.PowerOn,
-                    _form.Brightness,
-                    color,
-                    _form.ColorTemperatureKelvin,
-                    _form.NextShortcutId,
-                    _form.NextShortcutDelaySeconds,
-                    _cts.Token);
+                if (_editingId is { } compositeId)
+                {
+                    await ShortcutService.UpdateCompositeShortcutAsync(
+                        compositeId,
+                        _form.Name,
+                        references,
+                        _form.NextShortcutId,
+                        _form.NextShortcutDelaySeconds,
+                        _cts.Token);
+                }
+                else
+                {
+                    await ShortcutService.CreateCompositeShortcutAsync(
+                        _form.Name,
+                        references,
+                        _form.NextShortcutId,
+                        _form.NextShortcutDelaySeconds,
+                        _cts.Token);
+                }
             }
             else
             {
-                await ShortcutService.CreateShortcutAsync(
-                    _form.Name,
-                    targets,
-                    _form.PowerOn,
-                    _form.Brightness,
-                    color,
-                    _form.ColorTemperatureKelvin,
-                    _form.NextShortcutId,
-                    _form.NextShortcutDelaySeconds,
-                    _cts.Token);
+                if (_devices is null)
+                {
+                    return;
+                }
+
+                var targets = _devices
+                    .Where(d => _form.SelectedDeviceIds.Contains(d.Id))
+                    .Select(d => (d.Sku, d.Id))
+                    .ToList();
+
+                RgbColor? color = string.IsNullOrWhiteSpace(_form.ColorHex) ? null : RgbColor.FromHex(_form.ColorHex);
+                if (color is not null && _form.ColorTemperatureKelvin is not null)
+                {
+                    _error = "Set either a color or a color temperature, not both.";
+                    return;
+                }
+
+                if (_editingId is { } id)
+                {
+                    await ShortcutService.UpdateShortcutAsync(
+                        id,
+                        _form.Name,
+                        targets,
+                        _form.PowerOn,
+                        _form.Brightness,
+                        color,
+                        _form.ColorTemperatureKelvin,
+                        _form.NextShortcutId,
+                        _form.NextShortcutDelaySeconds,
+                        _cts.Token);
+                }
+                else
+                {
+                    await ShortcutService.CreateShortcutAsync(
+                        _form.Name,
+                        targets,
+                        _form.PowerOn,
+                        _form.Brightness,
+                        color,
+                        _form.ColorTemperatureKelvin,
+                        _form.NextShortcutId,
+                        _form.NextShortcutDelaySeconds,
+                        _cts.Token);
+                }
             }
 
             _shortcuts = await ShortcutService.ListShortcutsAsync(_cts.Token);
             ResetForm();
             await RefreshEligibleNextShortcutsAsync();
+            await RefreshEligibleReferencedShortcutsAsync();
             _error = null;
         }
         catch (Exception ex)
@@ -396,6 +543,7 @@ else
     {
         _editingId = shortcut.Id;
         _form.Name = shortcut.Name;
+        _isComposite = shortcut.ReferencedShortcuts.Count > 0 && shortcut.Targets.Count == 0;
         _form.SelectedDeviceIds.Clear();
         foreach (var target in shortcut.Targets)
         {
@@ -407,10 +555,28 @@ else
         _form.ColorTemperatureKelvin = shortcut.ColorTemperatureKelvin;
         _form.NextShortcutId = shortcut.NextShortcutId;
         _form.NextShortcutDelaySeconds = shortcut.NextShortcutDelaySeconds;
+
+        // For composites, rebuild the ordered reference list (in run order) so the picker shows
+        // what's already saved. A broken reference (its shortcut was deleted, leaving a null FK)
+        // is shown as "Missing shortcut" and dropped on the next save.
+        _referencedShortcuts.Clear();
+        foreach (var reference in shortcut.ReferencedShortcuts.OrderBy(r => r.Order))
+        {
+            _referencedShortcuts.Add(new ReferencedShortcutEntry
+            {
+                ShortcutId = reference.ReferencedShortcutId,
+                Name = reference.ReferencedShortcutId is { } rid
+                    ? (_shortcuts?.FirstOrDefault(s => s.Id == rid)?.Name ?? $"#{rid}")
+                    : "Missing shortcut",
+                DelaySeconds = reference.DelaySeconds
+            });
+        }
+        _selectedReferencedShortcutId = null;
         _error = null;
         // Eligibility depends on which shortcut is being edited (a shortcut may legally "keep" its
         // own current link even though nothing else may take it), so this must be re-scoped here.
         await RefreshEligibleNextShortcutsAsync();
+        await RefreshEligibleReferencedShortcutsAsync();
     }
 
     private async Task CancelEdit()
@@ -418,6 +584,7 @@ else
         ResetForm();
         _error = null;
         await RefreshEligibleNextShortcutsAsync();
+        await RefreshEligibleReferencedShortcutsAsync();
     }
 
     private void ResetForm()
@@ -431,6 +598,9 @@ else
         _form.ColorTemperatureKelvin = null;
         _form.NextShortcutId = null;
         _form.NextShortcutDelaySeconds = 0;
+        _isComposite = false;
+        _referencedShortcuts.Clear();
+        _selectedReferencedShortcutId = null;
     }
 
     private void OnFormColorTemperatureChanged(ChangeEventArgs e)
@@ -449,6 +619,69 @@ else
             // shortcut is relinked later) - kept here too so the form reflects it immediately.
             _form.NextShortcutDelaySeconds = 0;
         }
+    }
+
+    /// <summary>Switches the form between device-targeted and composite modes, resetting the
+    /// composite picker and re-scoping its eligibility list.</summary>
+    private async Task SetMode(bool isComposite)
+    {
+        _isComposite = isComposite;
+        _selectedReferencedShortcutId = null;
+        await RefreshEligibleReferencedShortcutsAsync();
+    }
+
+    private void OnSelectedReferencedShortcutChanged(ChangeEventArgs e)
+    {
+        var value = (string?)e.Value;
+        _selectedReferencedShortcutId = string.IsNullOrEmpty(value) ? null : int.Parse(value);
+    }
+
+    private void AddReferencedShortcut()
+    {
+        if (_selectedReferencedShortcutId is not { } selectedId)
+        {
+            return;
+        }
+        if (_referencedShortcuts.Any(r => r.ShortcutId == selectedId))
+        {
+            _error = "That shortcut is already in the list.";
+            return;
+        }
+
+        var name = _eligibleReferencedShortcuts.FirstOrDefault(s => s.Id == selectedId)?.Name ?? $"#{selectedId}";
+        _referencedShortcuts.Add(new ReferencedShortcutEntry { ShortcutId = selectedId, Name = name });
+        _selectedReferencedShortcutId = null;
+        _error = null;
+    }
+
+    private void RemoveReferencedShortcut(int index)
+    {
+        if (index >= 0 && index < _referencedShortcuts.Count)
+        {
+            _referencedShortcuts.RemoveAt(index);
+        }
+    }
+
+    /// <summary>Moves a referenced shortcut up (-1) or down (+1) in the run order.</summary>
+    private void MoveReferencedShortcut(int index, int direction)
+    {
+        var target = index + direction;
+        if (index < 0 || index >= _referencedShortcuts.Count || target < 0 || target >= _referencedShortcuts.Count)
+        {
+            return;
+        }
+        (_referencedShortcuts[index], _referencedShortcuts[target]) = (_referencedShortcuts[target], _referencedShortcuts[index]);
+    }
+
+    private void SetReferencedDelay(int index, object? value)
+    {
+        if (index < 0 || index >= _referencedShortcuts.Count)
+        {
+            return;
+        }
+        // Clamped to the same 0-60 range the service validates, so the form can't build a request
+        // the service will reject.
+        _referencedShortcuts[index].DelaySeconds = int.TryParse(value?.ToString(), out var seconds) ? Math.Clamp(seconds, 0, 60) : 0;
     }
 
     private void ToggleDevice(string deviceId, bool isSelected)
@@ -498,6 +731,24 @@ else
     }
 
     /// <summary>
+    /// True for a composite shortcut — one that references other shortcuts and has no device
+    /// targets of its own. The XOR with device-targeted shortcuts is enforced by the service.
+    /// </summary>
+    private static bool IsCompositeShortcut(Shortcut shortcut) =>
+        shortcut.ReferencedShortcuts.Count > 0 && shortcut.Targets.Count == 0;
+
+    /// <summary>Referenced shortcut names for a composite's expanded panel, in run order.</summary>
+    private IReadOnlyList<string> ReferencedShortcutNamesListFor(Shortcut shortcut)
+    {
+        return shortcut.ReferencedShortcuts
+            .OrderBy(r => r.Order)
+            .Select(r => r.ReferencedShortcutId is { } id
+                ? (_shortcuts?.FirstOrDefault(s => s.Id == id)?.Name ?? $"#{id}")
+                : "Missing shortcut")
+            .ToList();
+    }
+
+    /// <summary>
     /// "→ then {name} (after Ns)" row metadata for a shortcut that has a chain link, or null for
     /// one that doesn't. Resolves the linked shortcut's name from the already-loaded list rather
     /// than a fresh call, same approach as <see cref="DeviceNamesListFor"/>.
@@ -512,6 +763,16 @@ else
         var nextName = _shortcuts?.FirstOrDefault(s => s.Id == nextId)?.Name ?? $"#{nextId}";
         var delaySuffix = shortcut.NextShortcutDelaySeconds > 0 ? $" (after {shortcut.NextShortcutDelaySeconds}s)" : "";
         return $"→ then {nextName}{delaySuffix}";
+    }
+
+    /// <summary>One entry in the composite shortcut's ordered reference list, as built by the form.
+    /// <see cref="ShortcutId"/> is null for a broken reference (its shortcut was deleted) — shown
+    /// as "Missing shortcut" and dropped on save.</summary>
+    private sealed class ReferencedShortcutEntry
+    {
+        public int? ShortcutId { get; init; }
+        public required string Name { get; init; }
+        public int DelaySeconds { get; set; }
     }
 
     /// <summary>Backing model for the "new shortcut" form; kept simple/flat for Blazor's EditForm binding.</summary>

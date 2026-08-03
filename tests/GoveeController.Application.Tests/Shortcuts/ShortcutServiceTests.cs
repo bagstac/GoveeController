@@ -636,4 +636,394 @@ public class ShortcutServiceTests
         deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Once);
         deviceControl.Verify(d => d.TurnOffAsync(Sku3, DeviceId3, It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    // --- Composite shortcuts (COMPOSITE-SHORTCUTS-PLAN.md) ---
+
+    // Builds one reference entry as the service stores it (owning shortcut id, referenced id,
+    // delay, and order). ShortcutId here is the composite's own id.
+    private static ShortcutReference Ref(int owningShortcutId, int referencedId, int delaySeconds = 0, int order = 0) =>
+        new() { ShortcutId = owningShortcutId, ReferencedShortcutId = referencedId, DelaySeconds = delaySeconds, Order = order };
+
+    private static Shortcut DeviceShortcut(int id, string name) => new()
+    {
+        Id = id,
+        Name = name,
+        PowerOn = true,
+        CreatedAtUtc = DateTime.UtcNow,
+        Targets = [new ShortcutTarget { DeviceSku = Sku, DeviceId = DeviceId }]
+    };
+
+    // --- CreateCompositeShortcutAsync ---
+
+    [Fact]
+    public async Task CreateCompositeShortcutAsync_StoresReferencedShortcutsInOrder()
+    {
+        var a = DeviceShortcut(1, "A");
+        var b = DeviceShortcut(2, "B");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b });
+        repository.Setup(r => r.AddAsync(It.IsAny<Shortcut>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Shortcut s, CancellationToken _) => s);
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        var result = await service.CreateCompositeShortcutAsync(
+            "Movie Night", [(2, 5), (1, 0)], nextShortcutId: null, nextShortcutDelaySeconds: 0);
+
+        Assert.Empty(result.Targets);
+        Assert.Equal(2, result.ReferencedShortcuts.Count);
+        Assert.Equal(2, result.ReferencedShortcuts[0].ReferencedShortcutId);
+        Assert.Equal(5, result.ReferencedShortcuts[0].DelaySeconds);
+        Assert.Equal(0, result.ReferencedShortcuts[0].Order);
+        Assert.Equal(1, result.ReferencedShortcuts[1].ReferencedShortcutId);
+        Assert.Equal(1, result.ReferencedShortcuts[1].Order);
+        repository.Verify(r => r.AddAsync(It.IsAny<Shortcut>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateCompositeShortcutAsync_Throws_WhenNoReferences()
+    {
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut>());
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateCompositeShortcutAsync(
+            "Empty", [], nextShortcutId: null, nextShortcutDelaySeconds: 0));
+    }
+
+    [Fact]
+    public async Task CreateCompositeShortcutAsync_Throws_WhenReferenceDoesNotExist()
+    {
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut>());
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.CreateCompositeShortcutAsync(
+            "Bad Ref", [(999, 0)], nextShortcutId: null, nextShortcutDelaySeconds: 0));
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(61)]
+    public async Task CreateCompositeShortcutAsync_Throws_WhenDelayOutOfRange(int delaySeconds)
+    {
+        var a = DeviceShortcut(1, "A");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateCompositeShortcutAsync(
+            "Bad Delay", [(1, delaySeconds)], nextShortcutId: null, nextShortcutDelaySeconds: 0));
+    }
+
+    [Fact]
+    public async Task UpdateCompositeShortcutAsync_Throws_WhenReferencingItself()
+    {
+        var composite = new Shortcut { Id = 1, Name = "Composite", PowerOn = false, CreatedAtUtc = DateTime.UtcNow };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { composite });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpdateCompositeShortcutAsync(
+            1, "Composite", [(1, 0)], nextShortcutId: null, nextShortcutDelaySeconds: 0));
+    }
+
+    [Fact]
+    public async Task UpdateCompositeShortcutAsync_Throws_WhenReferenceWouldCreateCycle()
+    {
+        // A references B; making B also reference A would form a 2-cycle.
+        var a = new Shortcut
+        {
+            Id = 1, Name = "A", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 1, referencedId: 2)]
+        };
+        var b = DeviceShortcut(2, "B");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpdateCompositeShortcutAsync(
+            2, "B", [(1, 0)], nextShortcutId: null, nextShortcutDelaySeconds: 0));
+    }
+
+    [Fact]
+    public async Task UpdateCompositeShortcutAsync_Throws_WhenReferenceWouldCreateIndirectCycle()
+    {
+        // A (1) references B (2); B's chain runs C (3); C references A. Adding A -> B would close
+        // a loop: A -> B -> C -> A.
+        var a = new Shortcut { Id = 1, Name = "A", PowerOn = false, CreatedAtUtc = DateTime.UtcNow };
+        var b = new Shortcut { Id = 2, Name = "B", PowerOn = true, CreatedAtUtc = DateTime.UtcNow, NextShortcutId = 3 };
+        var c = new Shortcut
+        {
+            Id = 3, Name = "C", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 3, referencedId: 1)]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b, c });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpdateCompositeShortcutAsync(
+            1, "A", [(2, 0)], nextShortcutId: null, nextShortcutDelaySeconds: 0));
+    }
+
+    [Fact]
+    public async Task UpdateShortcutAsync_Throws_WhenChainLinkWouldCycleThroughCompositeReference()
+    {
+        // A (1) references B (2); linking B to run A next would close a loop through the composite
+        // graph (A -> B -> A) that the linear-chain cycle check alone cannot see.
+        var a = new Shortcut
+        {
+            Id = 1, Name = "A", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 1, referencedId: 2)]
+        };
+        var b = DeviceShortcut(2, "B");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpdateShortcutAsync(
+            2, "B", OneTarget, powerOn: true, brightness: null, color: null, colorTemperatureKelvin: null,
+            nextShortcutId: 1, nextShortcutDelaySeconds: 0));
+    }
+
+    [Fact]
+    public async Task CreateCompositeShortcutAsync_CanHaveItsOwnChainLink()
+    {
+        var a = DeviceShortcut(1, "A");
+        var b = DeviceShortcut(2, "B");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b });
+        repository.Setup(r => r.AddAsync(It.IsAny<Shortcut>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Shortcut s, CancellationToken _) => s);
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        var result = await service.CreateCompositeShortcutAsync(
+            "Composite", [(1, 0)], nextShortcutId: 2, nextShortcutDelaySeconds: 10);
+
+        Assert.Equal(2, result.NextShortcutId);
+        Assert.Equal(10, result.NextShortcutDelaySeconds);
+        Assert.Single(result.ReferencedShortcuts);
+    }
+
+    [Fact]
+    public async Task UpdateCompositeShortcutAsync_ReplacesReferencedShortcuts()
+    {
+        Shortcut? saved = null;
+        var a = DeviceShortcut(1, "A");
+        var b = DeviceShortcut(2, "B");
+        var c = DeviceShortcut(3, "C");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b, c });
+        repository.Setup(r => r.UpdateAsync(It.IsAny<Shortcut>(), It.IsAny<CancellationToken>()))
+            .Callback<Shortcut, CancellationToken>((s, _) => saved = s)
+            .Returns(Task.CompletedTask);
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        await service.UpdateCompositeShortcutAsync(
+            7, "Renamed Composite", [(3, 2), (1, 0)], nextShortcutId: null, nextShortcutDelaySeconds: 0);
+
+        Assert.NotNull(saved);
+        Assert.Equal(7, saved!.Id);
+        Assert.Equal("Renamed Composite", saved.Name);
+        Assert.Equal([3, 1], saved.ReferencedShortcuts.Select(r => r.ReferencedShortcutId));
+        Assert.Equal([0, 1], saved.ReferencedShortcuts.Select(r => r.Order));
+        Assert.Equal([2, 0], saved.ReferencedShortcuts.Select(r => r.DelaySeconds));
+    }
+
+    // --- ListEligibleReferencedShortcutsAsync ---
+
+    [Fact]
+    public async Task ListEligibleReferencedShortcutsAsync_ExcludesSelf()
+    {
+        var a = DeviceShortcut(1, "A");
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        var eligible = await service.ListEligibleReferencedShortcutsAsync(forShortcutId: 1);
+
+        Assert.Empty(eligible);
+    }
+
+    [Fact]
+    public async Task ListEligibleReferencedShortcutsAsync_ExcludesShortcutWhoseDownstreamWouldCycle()
+    {
+        // C (3) references A (1). While editing A, C must not be offered — adding A -> C would be
+        // a cycle (A -> C -> A). An unrelated shortcut B stays eligible.
+        var a = new Shortcut { Id = 1, Name = "A", PowerOn = false, CreatedAtUtc = DateTime.UtcNow };
+        var b = DeviceShortcut(2, "B");
+        var c = new Shortcut
+        {
+            Id = 3, Name = "C", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 3, referencedId: 1)]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b, c });
+        var service = new ShortcutService(repository.Object, new Mock<IDeviceControlService>().Object, TimeProvider.System);
+
+        var eligible = await service.ListEligibleReferencedShortcutsAsync(forShortcutId: 1);
+
+        Assert.DoesNotContain(eligible, s => s.Id == 1); // self
+        Assert.DoesNotContain(eligible, s => s.Id == 3); // C's downstream reaches A -> would cycle
+        Assert.Contains(eligible, s => s.Id == 2); // B is unrelated and safe to reference
+    }
+
+    // --- ApplyShortcutAsync: composites ---
+
+    [Fact]
+    public async Task ApplyShortcutAsync_RunsReferencedShortcutsInOrder()
+    {
+        var a = new Shortcut
+        {
+            Id = 1, Name = "Composite", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 1, referencedId: 2, order: 0), Ref(owningShortcutId: 1, referencedId: 3, order: 1)]
+        };
+        var b = DeviceShortcut(2, "B");
+        var c = new Shortcut
+        {
+            Id = 3, Name = "C", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            Targets = [new ShortcutTarget { DeviceSku = Sku2, DeviceId = DeviceId2 }]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { a, b, c });
+        var deviceControl = new Mock<IDeviceControlService>();
+        var callOrder = new List<string>();
+        deviceControl.Setup(d => d.TurnOnAsync(Sku, DeviceId, It.IsAny<CancellationToken>()))
+            .Callback(() => callOrder.Add("B-on")).Returns(Task.CompletedTask);
+        deviceControl.Setup(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()))
+            .Callback(() => callOrder.Add("C-off")).Returns(Task.CompletedTask);
+        var service = new ShortcutService(repository.Object, deviceControl.Object, TimeProvider.System);
+
+        await service.ApplyShortcutAsync(1);
+
+        Assert.Equal(["B-on", "C-off"], callOrder);
+    }
+
+    [Fact]
+    public async Task ApplyShortcutAsync_RunsReferencedShortcutChains()
+    {
+        // Composite (1) references B (2); B's chain runs C (3). Applying the composite must run B
+        // and then C.
+        var composite = new Shortcut
+        {
+            Id = 1, Name = "Composite", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 1, referencedId: 2)]
+        };
+        var b = new Shortcut
+        {
+            Id = 2, Name = "B", PowerOn = false, CreatedAtUtc = DateTime.UtcNow, NextShortcutId = 3,
+            Targets = [new ShortcutTarget { DeviceSku = Sku, DeviceId = DeviceId }]
+        };
+        var c = new Shortcut
+        {
+            Id = 3, Name = "C", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            Targets = [new ShortcutTarget { DeviceSku = Sku2, DeviceId = DeviceId2 }]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { composite, b, c });
+        var deviceControl = new Mock<IDeviceControlService>();
+        var service = new ShortcutService(repository.Object, deviceControl.Object, TimeProvider.System);
+
+        await service.ApplyShortcutAsync(1);
+
+        deviceControl.Verify(d => d.TurnOffAsync(Sku, DeviceId, It.IsAny<CancellationToken>()), Times.Once);
+        deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ApplyShortcutAsync_ContinuesToNextReferencedShortcut_WhenAnEarlierOneFails()
+    {
+        var composite = new Shortcut
+        {
+            Id = 1, Name = "Composite", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 1, referencedId: 2, order: 0), Ref(owningShortcutId: 1, referencedId: 3, order: 1)]
+        };
+        var b = new Shortcut
+        {
+            Id = 2, Name = "B", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            Targets = [new ShortcutTarget { DeviceSku = Sku, DeviceId = DeviceId }]
+        };
+        var c = new Shortcut
+        {
+            Id = 3, Name = "C", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            Targets = [new ShortcutTarget { DeviceSku = Sku2, DeviceId = DeviceId2 }]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { composite, b, c });
+        var deviceControl = new Mock<IDeviceControlService>();
+        deviceControl.Setup(d => d.TurnOffAsync(Sku, DeviceId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Device is offline."));
+        var service = new ShortcutService(repository.Object, deviceControl.Object, TimeProvider.System);
+
+        var ex = await Assert.ThrowsAsync<ShortcutApplyException>(() => service.ApplyShortcutAsync(1));
+
+        // B's failing target must not prevent C from running, and totals count device targets
+        // across the whole composite tree (B: 1 + C: 1 = 2).
+        deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(1, ex.SucceededCount);
+        Assert.Equal(2, ex.TotalCount);
+        var failure = Assert.Single(ex.Failures);
+        Assert.Equal(DeviceId, failure.DeviceId);
+        Assert.Equal(2, failure.ShortcutId);
+        Assert.Equal("B", failure.ShortcutName);
+    }
+
+    [Fact]
+    public async Task ApplyShortcutAsync_WaitsReferenceDelayBetweenReferencedShortcuts()
+    {
+        var composite = new Shortcut
+        {
+            Id = 1, Name = "Composite", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [Ref(owningShortcutId: 1, referencedId: 2, delaySeconds: 10, order: 0), Ref(owningShortcutId: 1, referencedId: 3, order: 1)]
+        };
+        var b = new Shortcut
+        {
+            Id = 2, Name = "B", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            Targets = [new ShortcutTarget { DeviceSku = Sku, DeviceId = DeviceId }]
+        };
+        var c = new Shortcut
+        {
+            Id = 3, Name = "C", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            Targets = [new ShortcutTarget { DeviceSku = Sku2, DeviceId = DeviceId2 }]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { composite, b, c });
+        var deviceControl = new Mock<IDeviceControlService>();
+        var timeProvider = new FakeTimeProvider();
+        var service = new ShortcutService(repository.Object, deviceControl.Object, timeProvider);
+
+        // The apply suspends exactly at the first reference's Task.Delay (all Moq calls resolve
+        // synchronously), so the second referenced shortcut must not run until the clock advances.
+        var applyTask = service.ApplyShortcutAsync(1);
+
+        deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Never);
+
+        timeProvider.Advance(TimeSpan.FromSeconds(10));
+        await applyTask;
+
+        deviceControl.Verify(d => d.TurnOffAsync(Sku, DeviceId, It.IsAny<CancellationToken>()), Times.Once);
+        deviceControl.Verify(d => d.TurnOffAsync(Sku2, DeviceId2, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ApplyShortcutAsync_SkipsMissingReferencedShortcut_AndReportsIt()
+    {
+        // The composite references shortcut 2, which no longer exists (its reference row was left
+        // behind with a null FK). Applying must not throw mid-way; it reports the missing step.
+        var composite = new Shortcut
+        {
+            Id = 1, Name = "Composite", PowerOn = false, CreatedAtUtc = DateTime.UtcNow,
+            ReferencedShortcuts = [new ShortcutReference { ShortcutId = 1, ReferencedShortcutId = 2, DelaySeconds = 0, Order = 0 }]
+        };
+        var repository = new Mock<IShortcutRepository>();
+        repository.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new List<Shortcut> { composite });
+        var deviceControl = new Mock<IDeviceControlService>();
+        var service = new ShortcutService(repository.Object, deviceControl.Object, TimeProvider.System);
+
+        var ex = await Assert.ThrowsAsync<ShortcutApplyException>(() => service.ApplyShortcutAsync(1));
+
+        Assert.Empty(deviceControl.Invocations);
+        var failure = Assert.Single(ex.Failures);
+        Assert.Equal("Referenced shortcut no longer exists.", failure.ErrorMessage);
+        Assert.Equal(1, failure.ShortcutId);
+    }
 }

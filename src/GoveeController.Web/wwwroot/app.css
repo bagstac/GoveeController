@@ -259,6 +259,102 @@ h1:focus {
     box-sizing: border-box;
 }
 
+/* Segmented control for the device/composite shortcut type toggle. */
+.segmented-control {
+    display: inline-flex;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.segmented-control .btn {
+    border: none;
+    border-radius: 0;
+    background: #fff;
+    color: #444;
+}
+
+.segmented-control .btn.active {
+    background: #007acc;
+    color: #fff;
+}
+
+/* Composite shortcut builder: picker row plus the ordered reference list. */
+.composite-builder {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid #e2e2e2;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.composite-builder > label {
+    display: block;
+    font-size: 0.85rem;
+    color: #444;
+    margin-bottom: 0.35rem;
+}
+
+.composite-picker-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.composite-picker-row select {
+    flex: 1;
+    padding: 0.4rem;
+    box-sizing: border-box;
+}
+
+.composite-list {
+    margin: 0.5rem 0 0;
+    padding-left: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.composite-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.composite-name {
+    min-width: 8rem;
+    font-weight: 600;
+}
+
+.composite-delay {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+    color: #666;
+}
+
+.composite-delay input {
+    width: 3.5rem;
+    padding: 0.3rem;
+    box-sizing: border-box;
+}
+
+/* Badge shown next to a composite shortcut's name in the list. */
+.composite-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #007acc;
+    background: #e8f2fb;
+    border: 1px solid #b9d7ef;
+    border-radius: 4px;
+    padding: 0.05rem 0.4rem;
+}
+
 .device-picker-trigger {
     width: 100%;
     text-align: left;

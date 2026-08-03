@@ -19,6 +19,8 @@ public sealed class ShortcutRepository : IShortcutRepository
     public async Task<IReadOnlyList<Shortcut>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await _db.Shortcuts
             .Include(s => s.Targets)
+            .Include(s => s.ReferencedShortcuts)
+            .AsSplitQuery()
             .AsNoTracking()
             .OrderByDescending(s => s.CreatedAtUtc)
             .ToListAsync(cancellationToken)
@@ -26,7 +28,12 @@ public sealed class ShortcutRepository : IShortcutRepository
 
     /// <inheritdoc />
     public Task<Shortcut?> GetByIdAsync(int id, CancellationToken cancellationToken = default) =>
-        _db.Shortcuts.Include(s => s.Targets).AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
+        _db.Shortcuts
+            .Include(s => s.Targets)
+            .Include(s => s.ReferencedShortcuts)
+            .AsSplitQuery()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
 
     /// <inheritdoc />
     public async Task<Shortcut> AddAsync(Shortcut shortcut, CancellationToken cancellationToken = default)
@@ -41,6 +48,8 @@ public sealed class ShortcutRepository : IShortcutRepository
     {
         var existing = await _db.Shortcuts
             .Include(s => s.Targets)
+            .Include(s => s.ReferencedShortcuts)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(s => s.Id == shortcut.Id, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"No shortcut with id {shortcut.Id} exists.");
@@ -60,6 +69,25 @@ public sealed class ShortcutRepository : IShortcutRepository
         foreach (var target in shortcut.Targets)
         {
             existing.Targets.Add(new ShortcutTarget { DeviceSku = target.DeviceSku, DeviceId = target.DeviceId });
+        }
+
+        // Same pattern for the composite reference set. ReferencedShortcutId is a plain FK, so a
+        // removed reference is simply dropped (EF Core's default delete-orphan behavior); we never
+        // touch the referenced shortcut itself. Only non-null references are carried over — a
+        // broken reference (referenced shortcut deleted) is cleaned up on the next save.
+        existing.ReferencedShortcuts.Clear();
+        foreach (var reference in shortcut.ReferencedShortcuts)
+        {
+            if (reference.ReferencedShortcutId is not { } referencedId)
+            {
+                continue;
+            }
+            existing.ReferencedShortcuts.Add(new ShortcutReference
+            {
+                ReferencedShortcutId = referencedId,
+                DelaySeconds = reference.DelaySeconds,
+                Order = reference.Order
+            });
         }
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

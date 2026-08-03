@@ -36,9 +36,12 @@ what makes them unit-testable without a network connection or a database.
 - `Device`, `DeviceCapability`, `LightState`, `RgbColor`, `GoveeScene` — device data as reported
   by Govee, normalized into a shape this app understands.
 - `Shortcut` — a user-defined preset (power/brightness/color applied to one or more devices), the
-  only thing this app persists itself. Optionally names another shortcut to run after it — see
-  "Linked shortcuts" below.
-- `ShortcutTarget` — one device a shortcut applies to; a shortcut has at least one.
+  only thing this app persists itself. Optionally names another shortcut to run after it, or — as a
+  composite shortcut — references other shortcuts to run in sequence instead of targeting devices —
+  see "Linked shortcuts" and "Composite shortcuts" below.
+- `ShortcutTarget` — one device a shortcut applies to; a device-targeted shortcut has at least one.
+- `ShortcutReference` — one shortcut a composite shortcut runs; a composite has no device targets of
+  its own and instead references these, in order.
 - `Schedule` / `ScheduleDays` — a rule that automatically applies a shortcut at a local wall-clock
   time, recurring on one or more days of the week or once at a specific date and time — see
   "Scheduled shortcuts" below.
@@ -47,8 +50,9 @@ what makes them unit-testable without a network connection or a database.
 - `IGoveeApiClient` / `IShortcutRepository` / `IScheduleRepository` — interfaces Infrastructure implements.
 - `IDeviceControlService` / `DeviceControlService` — device listing and control, with a short
   (~12s) in-memory cache on reads to stay well under Govee's 30 requests/minute rate limit.
-- `IShortcutService` / `ShortcutService` — CRUD for shortcuts, the chain-linking rules, and applying
-  a shortcut to all of its devices before continuing down its chain.
+- `IShortcutService` / `ShortcutService` — CRUD for shortcuts, the chain-linking and composite
+  reference rules, and applying a shortcut to all of its devices — or all of its referenced
+  shortcuts, for a composite — before continuing down its chain.
 - `IScheduleService` / `ScheduleService` — CRUD for schedules and `RunDueSchedulesAsync`, which fires
   every schedule that's due by calling `IShortcutService.ApplyShortcutAsync`. `NextOccurrence` is the
   pure calculator that turns a schedule's local day/time configuration into its next due UTC instant.
@@ -113,6 +117,28 @@ The per-link delay is the lever that makes large chains work: spacing steps apar
 burst of calls into a different rate-limit window. For chains covering many bulbs, prefer longer
 delays. If you do hit the limit, the app surfaces a "Govee rate limit reached" message and — because
 applying is best-effort — later steps still run, so you may end up with a partially applied chain.
+
+## Composite shortcuts
+
+A **composite shortcut** has no device targets of its own — instead it references other existing
+shortcuts and runs them in sequence. Think of it as a playlist: one click applies a whole series of
+presets, in the order you chose. Pick **"Composite shortcut"** on the Shortcuts page (the type toggle
+at the top of the form), then add shortcuts from the dropdown, set a per-reference delay, and
+reorder with the ↑/↓ buttons.
+
+- **A shortcut is either composite or device-targeted, never both.** A composite has no power,
+  brightness, or color of its own — those live in the shortcuts it references.
+- **Each referenced shortcut runs in full**, including its own chain. If your composite references
+  "Dim Lights" and "Dim Lights" chains to "Warm White", applying the composite runs both.
+- **Each reference has its own delay** (0–60 seconds) before the next referenced shortcut starts —
+  the same rate-limit lever as linked shortcuts, so a long playlist can space its bursts of Govee
+  calls across rate-limit windows.
+- **Composites can reference other composites**, and can themselves be chained from via the
+  "Then run" dropdown — subject to the usual loop detection. A reference that would create a cycle
+  (directly or through another composite's chain) is rejected.
+- **Deleting a shortcut that a composite references** breaks the link (shown as "Missing shortcut")
+  rather than deleting the composite; the broken reference is dropped the next time the composite
+  is edited and saved.
 
 ## Scheduled shortcuts
 
@@ -285,15 +311,20 @@ dotnet test
 Covers:
 
 - `DeviceControlService`'s caching/invalidation behavior and `ShortcutService`'s validation, apply,
-  and chain-linking logic (mocked repository and device-control service — no network).
+  chain-linking, and composite-reference logic (mocked repository and device-control service — no
+  network).
 - Chain behavior specifically: every validation rule at its boundary (self-link, already-followed,
   loops, the 3-shortcut cap, delay bounds), step ordering, that the delay runs between steps but not
   after the last one (via `FakeTimeProvider`, so no real waiting), cancellation mid-chain, and
   failure attribution back to the step it came from.
+- Composite shortcuts specifically: create/update/apply, that referenced shortcuts run in order and
+  in full (including their own chains), per-reference delays, and cycle rejection — both direct
+  cycles and indirect ones through another composite's chain or a chain link.
 - `ShortcutRepository` against a **real in-memory SQLite database**, not mocks — this is what
   actually verifies the EF Core behavior that's easy to get wrong: cascade-delete of a shortcut's
-  targets, `SetNull` clearing a predecessor's link when its follower is deleted, and the unique
-  index that stops two shortcuts pointing at the same follower.
+  targets and composite references, `SetNull` clearing a predecessor's link (or a composite's
+  reference) when the shortcut it points at is deleted, and the unique index that stops two
+  shortcuts pointing at the same follower.
 - `GoveeApiClient`'s request/response mapping against a fake `HttpMessageHandler` (verifies headers,
   request bodies, and error propagation).
 
